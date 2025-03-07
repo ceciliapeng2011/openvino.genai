@@ -5,6 +5,7 @@
 
 #include "openvino/genai/continuous_batching_pipeline.hpp"
 #include <memory>
+#include "lora_helper.hpp"
 
 namespace ov::genai {
 
@@ -208,6 +209,20 @@ public:
 
     void finish_chat() override {
         m_impl->finish_chat();
+    };
+
+    void remove_adapters(const ov::AnyMap& plugin_config) override {
+        
+        std::cout << "ContinuousBatchingAdapter::remove_adapters " << *m_adapter_controller <<  std::endl;
+
+        m_impl->remove_adapters(plugin_config);
+
+        std::optional<AdapterConfig> adapters;
+        auto filtered_properties = extract_adapters_from_properties(plugin_config, &adapters);
+
+        if (m_adapter_controller) {
+            m_adapter_controller->remove_adapters(adapters);
+        }
     };
 };
 

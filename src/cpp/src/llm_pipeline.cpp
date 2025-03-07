@@ -37,7 +37,8 @@ bool explicitly_requires_paged_attention(const ov::AnyMap& properties) {
 }
 
 std::pair<ov::AnyMap, std::string> extract_attention_backend(const ov::AnyMap& external_properties) {
-    std::string attention_backend = PA_BACKEND;
+    //std::string attention_backend = PA_BACKEND;
+    std::string attention_backend = SDPA_BACKEND;
     ov::AnyMap properties = external_properties;
 
     auto it = properties.find("ATTENTION_BACKEND");
@@ -296,6 +297,11 @@ void ov::genai::LLMPipeline::start_chat(const std::string& system_message) {
 
 void ov::genai::LLMPipeline::finish_chat() {
     m_pimpl->finish_chat();
+}
+
+void ov::genai::LLMPipeline::remove_adapters(const ov::AnyMap& config_map) {
+    std::cout << "$$$$$$$$$$$$$$$$$$$$" << std::endl;
+    m_pimpl->remove_adapters(config_map);
 }
 
 void ov::genai::LLMPipeline::set_generation_config(const GenerationConfig& config) {

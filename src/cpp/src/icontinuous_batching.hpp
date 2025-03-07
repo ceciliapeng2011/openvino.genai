@@ -133,5 +133,7 @@ public:
      * Ends chat
      */
     void finish_chat();
+
+    void remove_adapters(const ov::AnyMap& plugin_config);
 };
 }

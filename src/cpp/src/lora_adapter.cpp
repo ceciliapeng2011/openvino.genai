@@ -287,7 +287,7 @@ struct LoRAWeightGetterDefault {
         std::cerr << "[ WARNING ] There unused LoRA tensors. The result of generation can be not accurate. Check if a given adapter file is compatible with the base model.\n";
 
         for(const auto& unused_name: unused) {
-            std::cerr << "    Unused LoRA tensor: " << unused_name << "\n";
+            //std::cerr << "    Unused LoRA tensor: " << unused_name << "\n";
         }
     }
 };
@@ -1068,6 +1068,31 @@ struct AdapterControllerImpl {
         }
     }
 
+    void remove_adapters(const AdapterConfig& config) {
+        const auto &adapters1 = current_config.get_adapters(), adapters2 = config.get_adapters();
+
+        std::cout << "adapters1 size " << adapters1.size() << " adapters2.size " << adapters2.size() << std::endl;
+
+        if (adapters2.size() > 0) {
+            if (adapters1.size() > 0) {
+                // if current adpater need to remove, remove from current_config.adapters
+                for (const auto& adapter1 : adapters1) {
+                    for (const auto& adapter2 : adapters2) {
+                        if (adapter1 == adapter2) {
+                            current_config.remove(adapter1);
+                            need_full_apply = true;
+                        }
+                    }
+                }
+            }
+
+            for (const auto& adapter2 : adapters2) {
+                std::cout << "### delete adapter use count " << adapter2.m_pimpl.use_count() << std::endl;
+                adapter2.~Adapter();
+            }
+        }
+    }
+
     bool has_state_name(const std::string& name) {
         return variable_names.count(name);
     }
@@ -1382,6 +1407,12 @@ void AdapterController::apply(ov::InferRequest request, const std::optional<Adap
     }
 }
 
+void AdapterController::remove_adapters(const std::optional<AdapterConfig>& config) {
+    OPENVINO_ASSERT(m_pimpl || !config || !*config, "Adapters are removed.");
+    if (m_pimpl) {
+        m_pimpl->remove_adapters(*config);
+    }
+}
 
 bool AdapterController::has_state_name(const std::string& name) {
     return m_pimpl->has_state_name(name);
