@@ -29,14 +29,12 @@ Runs continuous batching benchmark cases:
     --xattention_block_size: XATTENTION block size for cm path (default: 256)
     --xattention_block_threshold: XATTENTION threshold for cm path (default: 100.0). Ignored for ocl.
     --profile:   Run via cliloader and dump clintercept traces to <output>/<case>/profiling/
-    --compare:   Compare logs/profiling in <output>/ folders and generate a CSV report if any of the following exist:
-                   ocl and cm route/xattention variants with OV_GPU_CM_PA_FORCE_LOCKABLE_MAPPING={0,1}
+    --compare:   Compare logs/profiling in <output>/ folders and generate a CSV report
     --output:    Output directory for logs/profiling/report CSV (default: temp). Relative paths are under script root.
     --help:      Show this help message
 
 The benchmark binary is executed as follows, with environment variables controlling the configuration:
     OV_GPU_CM_MIXED_ROUTE_MODE=multi|split (only for cm)
-    OV_GPU_CM_PA_FORCE_LOCKABLE_MAPPING=0|1 (only for cm)
     cd ~/openvino.genai/
     ./build/bin/continuous_batching_benchmark  --device GPU -m "$MODEL_PATH" --dataset "$DATASET_PATH" \
     --cache_size "$CACHE_SIZE" -n "$NUM_PROMPTS"  \
@@ -52,7 +50,7 @@ Notes:
         4. cm backend always runs with --use_xattention.
     5. output layout:
             <output>/ocl/
-            <output>/cm/use_xattention.on.xbls_<xattention_block_size>.threshold_<xattention_block_threshold>/route_<multi|split>.force_lockable_mapping_<0|1>/
+            <output>/cm/use_xattention.on.xbls_<xattention_block_size>.threshold_<xattention_block_threshold>/route_<multi|split>/
 
 Environment overrides:
     MODEL_PATH          Model path
@@ -156,7 +154,7 @@ mkdir -p "$LOG_DIR"
 if [[ "$DO_COMPARE" == "1" ]]; then
     REPORT_CSV="$LOG_DIR/compare_report.csv"
     mkdir -p "$(dirname "$REPORT_CSV")"
-    echo "case_id,case_name,xattention_block_size,route,force_lockable_mapping,backend,xattention_threshold,input_throughput,output_throughput,mean_ttft,mean_tpot,benchmark_duration,total_input_tokens,total_output_tokens,log_path,profiling_dir,sum_kernel_ms,kernels" > "$REPORT_CSV"
+    echo "case_id,case_name,xattention_block_size,route,backend,xattention_threshold,input_throughput,output_throughput,mean_ttft,mean_tpot,benchmark_duration,total_input_tokens,total_output_tokens,log_path,profiling_dir,sum_kernel_ms,kernels" > "$REPORT_CSV"
 
     parse_kernel_summary() {
         local trace_file="$1"
@@ -268,18 +266,21 @@ PY
         xattention_threshold="na"
         route="na"
         backend="${rel_dir%%/*}"
-        force_lockable="na"
 
         if [[ "$backend" == "ocl" ]]; then
             route="multi"
+        elif [[ "$rel_dir" =~ ^cm/use_xattention\.off/route_([^./]+)$ ]]; then
+            route="${BASH_REMATCH[1]}"
         elif [[ "$rel_dir" =~ ^cm/use_xattention\.off/route_([^./]+)\.force_lockable_mapping_([^/]+)$ ]]; then
             route="${BASH_REMATCH[1]}"
-            force_lockable="${BASH_REMATCH[2]}"
+        elif [[ "$rel_dir" =~ ^cm/use_xattention\.on\.xbls_([^/]+)\.threshold_([^/]+)/route_([^./]+)$ ]]; then
+            xattention_block_size="${BASH_REMATCH[1]}"
+            xattention_threshold="${BASH_REMATCH[2]}"
+            route="${BASH_REMATCH[3]}"
         elif [[ "$rel_dir" =~ ^cm/use_xattention\.on\.xbls_([^/]+)\.threshold_([^/]+)/route_([^./]+)\.force_lockable_mapping_([^/]+)$ ]]; then
             xattention_block_size="${BASH_REMATCH[1]}"
             xattention_threshold="${BASH_REMATCH[2]}"
             route="${BASH_REMATCH[3]}"
-            force_lockable="${BASH_REMATCH[4]}"
         fi
 
         profiling_dir="$folder/profiling"
@@ -328,9 +329,9 @@ PY
         if [[ -n "$kernels" ]]; then
             kernel_multiline="${kernels// | /$'\n'}"
             # Quote the kernels field so embedded newlines stay in the same CSV cell.
-            echo "$case_id,$key,$xattention_block_size,$route,$force_lockable,$backend,$xattention_threshold,$input_tp,$output_tp,$mean_ttft,$mean_tpot,$benchmark_duration,$total_input_tokens,$total_output_tokens,$rel_log_path,$rel_profiling_dir,$sum_kernel_ms,\"$kernel_multiline\"" >> "$REPORT_CSV"
+            echo "$case_id,$key,$xattention_block_size,$route,$backend,$xattention_threshold,$input_tp,$output_tp,$mean_ttft,$mean_tpot,$benchmark_duration,$total_input_tokens,$total_output_tokens,$rel_log_path,$rel_profiling_dir,$sum_kernel_ms,\"$kernel_multiline\"" >> "$REPORT_CSV"
         else
-            echo "$case_id,$key,$xattention_block_size,$route,$force_lockable,$backend,$xattention_threshold,$input_tp,$output_tp,$mean_ttft,$mean_tpot,$benchmark_duration,$total_input_tokens,$total_output_tokens,$rel_log_path,$rel_profiling_dir,$sum_kernel_ms," >> "$REPORT_CSV"
+            echo "$case_id,$key,$xattention_block_size,$route,$backend,$xattention_threshold,$input_tp,$output_tp,$mean_ttft,$mean_tpot,$benchmark_duration,$total_input_tokens,$total_output_tokens,$rel_log_path,$rel_profiling_dir,$sum_kernel_ms," >> "$REPORT_CSV"
         fi
         case_id=$((case_id + 1))
     done < <(
@@ -367,17 +368,16 @@ run_case() {
     local case_name="$1"
     local impl="$2"
     local route_mode="$3"
-    local force_lockable="$4"
-    local xattention_block_size="$5"
-    local xattention_block_threshold="$6"
-    shift 6
+    local xattention_block_size="$4"
+    local xattention_block_threshold="$5"
+    shift 5
 
     local case_dir=""
     if [[ "$impl" == "ocl" ]]; then
         case_dir="$LOG_DIR/ocl"
     else
         local cm_mode_dir="use_xattention.on.xbls_${xattention_block_size}.threshold_${xattention_block_threshold}"
-        case_dir="$LOG_DIR/cm/${cm_mode_dir}/route_${route_mode}.force_lockable_mapping_${force_lockable}"
+        case_dir="$LOG_DIR/cm/${cm_mode_dir}/route_${route_mode}"
     fi
     local log_file="$case_dir/benchmark.log"
     local dump_dir="$case_dir/profiling"
@@ -386,7 +386,7 @@ run_case() {
 
     echo "============================================================"
     echo "Running case: $case_name"
-    echo "backend=$impl, OV_GPU_CM_MIXED_ROUTE_MODE=$route_mode, OV_GPU_CM_PA_FORCE_LOCKABLE_MAPPING=$force_lockable, xattention_block_size=${xattention_block_size:-na}, xattention_threshold=${xattention_block_threshold:-na}"
+    echo "backend=$impl, OV_GPU_CM_MIXED_ROUTE_MODE=$route_mode, xattention_block_size=${xattention_block_size:-na}, xattention_threshold=${xattention_block_threshold:-na}"
     echo "Log file: $log_file"
     if [[ "$PROFILE" == "1" ]]; then
         echo "Profiling dump dir: $dump_dir"
@@ -396,9 +396,6 @@ run_case() {
         # export OV_VERBOSE=4
         if [[ "$impl" == "cm" ]]; then
             export OV_GPU_CM_MIXED_ROUTE_MODE="$route_mode"
-            export OV_GPU_CM_PA_FORCE_LOCKABLE_MAPPING="$force_lockable"
-        else
-            unset OV_GPU_CM_PA_FORCE_LOCKABLE_MAPPING
         fi
 
         run_args=("${COMMON_ARGS[@]}")
@@ -424,19 +421,15 @@ if [[ "$BACKEND" == "cm" || "$BACKEND" == "both" ]]; then
     # If route is 'both', run both multi and split
     if [[ "$ROUTE" == "both" ]]; then
         for route_mode in multi split; do
-            for force_lockable in 0 1; do
-                run_case "cm_${route_mode}_xattn${XATTENTION_BLOCK_SIZE}_thr${XATTENTION_BLOCK_THRESHOLD}_flm${force_lockable}" "cm" "$route_mode" "$force_lockable" "$XATTENTION_BLOCK_SIZE" "$XATTENTION_BLOCK_THRESHOLD"
-            done
+            run_case "cm_${route_mode}_xattn${XATTENTION_BLOCK_SIZE}_thr${XATTENTION_BLOCK_THRESHOLD}" "cm" "$route_mode" "$XATTENTION_BLOCK_SIZE" "$XATTENTION_BLOCK_THRESHOLD"
         done
     else
-        for force_lockable in 0 1; do
-            run_case "cm_${ROUTE}_xattn${XATTENTION_BLOCK_SIZE}_thr${XATTENTION_BLOCK_THRESHOLD}_flm${force_lockable}" "cm" "$ROUTE" "$force_lockable" "$XATTENTION_BLOCK_SIZE" "$XATTENTION_BLOCK_THRESHOLD"
-        done
+        run_case "cm_${ROUTE}_xattn${XATTENTION_BLOCK_SIZE}_thr${XATTENTION_BLOCK_THRESHOLD}" "cm" "$ROUTE" "$XATTENTION_BLOCK_SIZE" "$XATTENTION_BLOCK_THRESHOLD"
     fi
 fi
 if [[ "$BACKEND" == "ocl" || "$BACKEND" == "both" ]]; then
     # ocl backend: route multi, no xattention
-    run_case "ocl" "ocl" "multi" "na" "na" "na"
+    run_case "ocl" "ocl" "multi" "na" "na"
 fi
 
 echo "All selected cases finished. Logs are in: $LOG_DIR"
