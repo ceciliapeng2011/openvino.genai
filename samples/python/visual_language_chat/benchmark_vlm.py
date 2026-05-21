@@ -57,6 +57,7 @@ def scheduler_config_from_cm_path(cm_path: bool) -> ov_genai.SchedulerConfig:
         sparse_attention_config.mode = ov_genai.SparseAttentionMode.XATTENTION
         sparse_attention_config.xattention_threshold = 100.0
 
+        scheduler_config.use_sparse_attention = True
         scheduler_config.sparse_attention_config = sparse_attention_config
 
     return scheduler_config
