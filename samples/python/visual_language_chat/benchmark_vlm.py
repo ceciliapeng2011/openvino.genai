@@ -117,6 +117,7 @@ def main():
 
     config = ov_genai.GenerationConfig()
     config.max_new_tokens = args.max_new_tokens
+    config.apply_chat_template = False
     if args.pruning_ratio is not None:
         config.pruning_ratio = args.pruning_ratio
     if args.relevance_weight is not None:
@@ -129,7 +130,11 @@ def main():
         scheduler_config = scheduler_config_from_cm_path(args.cm_path)
         pipe = ov_genai.VLMPipeline(models_path, device, scheduler_config=scheduler_config)
 
-    input_data = pipe.get_tokenizer().encode(prompt)
+    tokenizer = pipe.get_tokenizer()
+    prompt = tokenizer.apply_chat_template(
+        [{"role": "user", "content": prompt}], add_generation_prompt=True)
+
+    input_data = tokenizer.encode(prompt)
     prompt_token_size = input_data.input_ids.get_shape()[1]
     print(f"Number of images:{len(images)}, Prompt token size: {prompt_token_size}")
 
