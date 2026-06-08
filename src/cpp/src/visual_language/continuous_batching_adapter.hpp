@@ -195,9 +195,12 @@ private:
         );
         final_decoded_results.perf_metrics.m_evaluated = false;
         final_decoded_results.perf_metrics.evaluate_statistics(start_time);
-        if (!final_decoded_results.perf_metrics.raw_metrics.m_token_infer_durations.empty()) {
-            final_decoded_results.perf_metrics.vlm_raw_metrics.lm_prefill_durations.emplace_back(
-                final_decoded_results.perf_metrics.raw_metrics.m_token_infer_durations[0]);
+        if (!final_decoded_results.perf_metrics.raw_metrics.m_times_to_first_token.empty() &&
+            !final_decoded_results.perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.empty()) {
+            auto ttft_us = final_decoded_results.perf_metrics.raw_metrics.m_times_to_first_token[0];
+            auto embed_us = final_decoded_results.perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.back();
+            auto lm_prefill_us = ttft_us - embed_us;
+            final_decoded_results.perf_metrics.vlm_raw_metrics.lm_prefill_durations.emplace_back(lm_prefill_us);
         }
         final_decoded_results.texts = decoded_results.texts;
         final_decoded_results.scores = decoded_results.scores;
