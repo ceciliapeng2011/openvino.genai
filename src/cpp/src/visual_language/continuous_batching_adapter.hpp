@@ -224,14 +224,12 @@ private:
                 trace.add_metric_event("TTFT", "pipeline", start_time, ttft_dur_us, 1);
             }
             if (!metrics.vlm_raw_metrics.prepare_embeddings_durations.empty() &&
-                !metrics.raw_metrics.m_inference_durations.empty() &&
-                !metrics.raw_metrics.m_times_to_first_token.empty()) {
+                !metrics.vlm_raw_metrics.prepare_embeddings_offsets.empty()) {
                 auto embed_dur_us = static_cast<int64_t>(metrics.vlm_raw_metrics.prepare_embeddings_durations[0].count());
+                auto embed_offset_us = static_cast<int64_t>(metrics.vlm_raw_metrics.prepare_embeddings_offsets[0].count());
                 GENAI_INFO("[TRACE] [%s] EmbeddingsPreparationTime: %.3f ms", trace_timestamp().c_str(), embed_dur_us / 1000.0);
-                auto lm_prefill_us = static_cast<int64_t>(metrics.raw_metrics.m_inference_durations[0].count());
-                auto ttft_dur_us = static_cast<int64_t>(metrics.raw_metrics.m_times_to_first_token[0].count());
-                auto embed_end = start_time + std::chrono::microseconds(ttft_dur_us - lm_prefill_us);
-                auto embed_start = embed_end - std::chrono::microseconds(embed_dur_us);
+                auto embed_start = start_time + std::chrono::microseconds(embed_offset_us);
+                auto embed_end = embed_start + std::chrono::microseconds(embed_dur_us);
                 trace.add_event_from_timepoints("EmbeddingsPreparationTime", "pipeline", embed_start, embed_end, 1);
             }
             if (metrics.tpot.mean > 0 && !metrics.raw_metrics.m_new_token_times.empty()) {

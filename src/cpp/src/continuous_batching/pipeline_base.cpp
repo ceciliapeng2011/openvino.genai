@@ -410,6 +410,7 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
         }
         auto end_get_inputs_embeds = std::chrono::steady_clock::now();
         vlm_perf_metrics[0].vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
+        vlm_perf_metrics[0].vlm_raw_metrics.prepare_embeddings_offsets.emplace_back(PerfMetrics::get_microsec(start_get_inputs_embeds - generate_start_time));
 
         position_ids_list.push_back(m_inputs_embedder->get_position_ids(input_embeds_list[0].get_shape()[1], 0));
 
@@ -466,6 +467,7 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
             }
             auto end_get_inputs_embeds = std::chrono::steady_clock::now();
             vlm_perf_metrics[i].vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
+            vlm_perf_metrics[i].vlm_raw_metrics.prepare_embeddings_offsets.emplace_back(PerfMetrics::get_microsec(start_get_inputs_embeds - generate_start_time));
 
             mm.collecting = false;
 
@@ -648,6 +650,7 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
     
         auto end_get_inputs_embeds = std::chrono::steady_clock::now();
         vlm_perf_metrics[i].vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
+        vlm_perf_metrics[i].vlm_raw_metrics.prepare_embeddings_offsets.emplace_back(PerfMetrics::get_microsec(start_get_inputs_embeds - generate_start_time));
     }
 
     std::vector<EncodedGenerationResult> encoded_results = generate(input_embeds_list,
