@@ -195,9 +195,9 @@ private:
         );
         final_decoded_results.perf_metrics.m_evaluated = false;
         final_decoded_results.perf_metrics.evaluate_statistics(start_time);
-        if (!final_decoded_results.perf_metrics.raw_metrics.m_token_infer_durations.empty()) {
+        if (!final_decoded_results.perf_metrics.raw_metrics.m_inference_durations.empty()) {
             final_decoded_results.perf_metrics.vlm_raw_metrics.lm_prefill_durations.emplace_back(
-                final_decoded_results.perf_metrics.raw_metrics.m_token_infer_durations[0]);
+                final_decoded_results.perf_metrics.raw_metrics.m_inference_durations[0]);
         }
         final_decoded_results.texts = decoded_results.texts;
         final_decoded_results.scores = decoded_results.scores;
@@ -224,11 +224,11 @@ private:
                 trace.add_metric_event("TTFT", "pipeline", start_time, ttft_dur_us, 1);
             }
             if (!metrics.vlm_raw_metrics.prepare_embeddings_durations.empty() &&
-                !metrics.raw_metrics.m_token_infer_durations.empty() &&
+                !metrics.raw_metrics.m_inference_durations.empty() &&
                 !metrics.raw_metrics.m_times_to_first_token.empty()) {
                 auto embed_dur_us = static_cast<int64_t>(metrics.vlm_raw_metrics.prepare_embeddings_durations[0].count());
                 GENAI_INFO("[TRACE] [%s] EmbeddingsPreparationTime: %.3f ms", trace_timestamp().c_str(), embed_dur_us / 1000.0);
-                auto lm_prefill_us = static_cast<int64_t>(metrics.raw_metrics.m_token_infer_durations[0].count());
+                auto lm_prefill_us = static_cast<int64_t>(metrics.raw_metrics.m_inference_durations[0].count());
                 auto ttft_dur_us = static_cast<int64_t>(metrics.raw_metrics.m_times_to_first_token[0].count());
                 auto embed_end = start_time + std::chrono::microseconds(ttft_dur_us - lm_prefill_us);
                 auto embed_start = embed_end - std::chrono::microseconds(embed_dur_us);

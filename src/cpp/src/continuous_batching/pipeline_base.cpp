@@ -350,7 +350,6 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
     if (m_is_chat_conversation) {
         OPENVINO_ASSERT(1 == prompts.size(), "Can't chat with multiple prompts");
         const auto& prompt = prompts[0];
-        auto start_get_inputs_embeds = std::chrono::steady_clock::now();
 
         {
             ov::genai::ScopedTrace trace("EncodeImages");
@@ -384,6 +383,7 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
             original_prompt_ids_list.push_back(prompt_ids);
         }
 
+        auto start_get_inputs_embeds = std::chrono::steady_clock::now();
         {
             ov::genai::ScopedTrace trace("EmbeddingsPreparation");
             if (m_inputs_embedder->has_token_type_ids()) {
@@ -408,18 +408,16 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
                                                                                     m_history_vision_count));
             }
         }
+        auto end_get_inputs_embeds = std::chrono::steady_clock::now();
+        vlm_perf_metrics[0].vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
 
         position_ids_list.push_back(m_inputs_embedder->get_position_ids(input_embeds_list[0].get_shape()[1], 0));
 
         lm_extra_inputs_list.push_back(m_inputs_embedder->get_lm_extra_inputs());
 
-        auto end_get_inputs_embeds = std::chrono::steady_clock::now();
-        vlm_perf_metrics[0].vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
-
     } else {
         for (size_t i = 0; i < prompts.size(); i++) {
             const auto& prompt = prompts[i];
-            auto start_get_inputs_embeds = std::chrono::steady_clock::now();
 
             auto& mm = ov::genai::get_model_metrics();
             mm.reset();
@@ -449,6 +447,7 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
                 original_prompt_ids_list.push_back(prompt_ids);
             }
 
+            auto start_get_inputs_embeds = std::chrono::steady_clock::now();
             {
                 ov::genai::ScopedTrace trace("EmbeddingsPreparation");
                 if (m_inputs_embedder->has_token_type_ids()) {
@@ -465,6 +464,8 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
                     input_embeds_list.emplace_back(m_inputs_embedder->get_inputs_embeds(unified_prompt, encoded_images, encoded_videos, vlm_perf_metrics[i], recalculate_merged_embeddings, image_sequence, video_sequence));
                 }
             }
+            auto end_get_inputs_embeds = std::chrono::steady_clock::now();
+            vlm_perf_metrics[i].vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
 
             mm.collecting = false;
 
@@ -472,8 +473,6 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
 
             lm_extra_inputs_list.push_back(deep_copy_tensors_map(m_inputs_embedder->get_lm_extra_inputs()));
 
-            auto end_get_inputs_embeds = std::chrono::steady_clock::now();
-            vlm_perf_metrics[i].vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
             vlm_perf_metrics[i].vlm_raw_metrics.vision_encoder_durations.emplace_back(mm.vision_encoder_us);
             vlm_perf_metrics[i].vlm_raw_metrics.tokenizer_durations.emplace_back(mm.tokenizer_us);
             vlm_perf_metrics[i].vlm_raw_metrics.text_embeddings_durations.emplace_back(mm.text_embeddings_us);
