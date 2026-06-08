@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "continuous_batching/pipeline_base.hpp"
+#include "chrome_trace.hpp"
 #include "visual_language/chat_history_state.hpp"
 #include "visual_language/vlm_chat_context.hpp"
 
@@ -351,10 +352,16 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
         const auto& prompt = prompts[0];
         auto start_get_inputs_embeds = std::chrono::steady_clock::now();
 
-        encoded_images = m_inputs_embedder->encode_images(images_vector[0]);
+        {
+            ov::genai::ScopedTrace trace("EncodeImages");
+            encoded_images = m_inputs_embedder->encode_images(images_vector[0]);
+        }
         m_history_images.insert(m_history_images.end(), encoded_images.begin(), encoded_images.end());
 
-        encoded_videos = m_inputs_embedder->encode_videos(videos_vector[0], videos_metadata_vector[0]);
+        {
+            ov::genai::ScopedTrace trace("EncodeVideos");
+            encoded_videos = m_inputs_embedder->encode_videos(videos_vector[0], videos_metadata_vector[0]);
+        }
         m_history_videos.insert(m_history_videos.end(), encoded_videos.begin(), encoded_videos.end());
 
         auto [unified_prompt, image_sequence, video_sequence] = m_inputs_embedder->normalize_prompt(prompt, m_image_id, m_video_id, encoded_images, encoded_videos);
@@ -377,26 +384,29 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
             original_prompt_ids_list.push_back(prompt_ids);
         }
 
-        if (m_inputs_embedder->has_token_type_ids()) {
-            auto [embeds, tt_ids] = m_inputs_embedder->get_inputs_embeds_with_token_type_ids(templated_history,
-                                                                                             m_history_images,
-                                                                                             m_history_videos,
-                                                                                             vlm_perf_metrics[0],
-                                                                                             recalculate_merged_embeddings,
-                                                                                             m_history_image_ids,
-                                                                                             m_history_video_ids,
-                                                                                             m_history_vision_count);
-            input_embeds_list.push_back(std::move(embeds));
-            token_type_ids_list.push_back(std::move(tt_ids));
-        } else {
-            input_embeds_list.emplace_back(m_inputs_embedder->get_inputs_embeds(templated_history,
-                                                                                m_history_images,
-                                                                                m_history_videos,
-                                                                                vlm_perf_metrics[0],
-                                                                                recalculate_merged_embeddings,
-                                                                                m_history_image_ids,
-                                                                                m_history_video_ids,
-                                                                                m_history_vision_count));
+        {
+            ov::genai::ScopedTrace trace("EmbeddingsPreparation");
+            if (m_inputs_embedder->has_token_type_ids()) {
+                auto [embeds, tt_ids] = m_inputs_embedder->get_inputs_embeds_with_token_type_ids(templated_history,
+                                                                                                 m_history_images,
+                                                                                                 m_history_videos,
+                                                                                                 vlm_perf_metrics[0],
+                                                                                                 recalculate_merged_embeddings,
+                                                                                                 m_history_image_ids,
+                                                                                                 m_history_video_ids,
+                                                                                                 m_history_vision_count);
+                input_embeds_list.push_back(std::move(embeds));
+                token_type_ids_list.push_back(std::move(tt_ids));
+            } else {
+                input_embeds_list.emplace_back(m_inputs_embedder->get_inputs_embeds(templated_history,
+                                                                                    m_history_images,
+                                                                                    m_history_videos,
+                                                                                    vlm_perf_metrics[0],
+                                                                                    recalculate_merged_embeddings,
+                                                                                    m_history_image_ids,
+                                                                                    m_history_video_ids,
+                                                                                    m_history_vision_count));
+            }
         }
 
         position_ids_list.push_back(m_inputs_embedder->get_position_ids(input_embeds_list[0].get_shape()[1], 0));
@@ -410,13 +420,25 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
         for (size_t i = 0; i < prompts.size(); i++) {
             const auto& prompt = prompts[i];
             auto start_get_inputs_embeds = std::chrono::steady_clock::now();
-            
+
+            auto& mm = ov::genai::get_model_metrics();
+            mm.reset();
+            mm.collecting = true;
+
             auto images_to_encode = images_vector.size() > 0 ? images_vector[i] : std::vector<ov::Tensor>{};
-            const auto encoded_images = m_inputs_embedder->encode_images(images_to_encode);
+            std::vector<EncodedImage> encoded_images;
+            {
+                ov::genai::ScopedTrace trace("EncodeImages");
+                encoded_images = m_inputs_embedder->encode_images(images_to_encode);
+            }
 
             auto videos_to_encode = videos_vector.size() > 0 ? videos_vector[i] : std::vector<ov::Tensor>{};
             auto videos_metadata = videos_metadata_vector.size() > 0 ? videos_metadata_vector[i] : std::vector<ov::genai::VideoMetadata>{};
-            const auto encoded_videos = m_inputs_embedder->encode_videos(videos_to_encode, videos_metadata);
+            std::vector<EncodedVideo> encoded_videos;
+            {
+                ov::genai::ScopedTrace trace("EncodeVideos");
+                encoded_videos = m_inputs_embedder->encode_videos(videos_to_encode, videos_metadata);
+            }
 
             auto [unified_prompt, image_sequence, video_sequence] = m_inputs_embedder->normalize_prompt(prompt, m_image_id, m_video_id, encoded_images, encoded_videos);
 
@@ -427,26 +449,36 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
                 original_prompt_ids_list.push_back(prompt_ids);
             }
 
-            if (m_inputs_embedder->has_token_type_ids()) {
-                auto [embeds, tt_ids] = m_inputs_embedder->get_inputs_embeds_with_token_type_ids(unified_prompt,
-                                                                                                 encoded_images,
-                                                                                                 encoded_videos,
-                                                                                                 vlm_perf_metrics[i],
-                                                                                                 recalculate_merged_embeddings,
-                                                                                                 image_sequence,
-                                                                                                 video_sequence);
-                input_embeds_list.push_back(std::move(embeds));
-                token_type_ids_list.push_back(std::move(tt_ids));
-            } else {
-                input_embeds_list.emplace_back(m_inputs_embedder->get_inputs_embeds(unified_prompt, encoded_images, encoded_videos, vlm_perf_metrics[i], recalculate_merged_embeddings, image_sequence, video_sequence));
+            {
+                ov::genai::ScopedTrace trace("EmbeddingsPreparation");
+                if (m_inputs_embedder->has_token_type_ids()) {
+                    auto [embeds, tt_ids] = m_inputs_embedder->get_inputs_embeds_with_token_type_ids(unified_prompt,
+                                                                                                     encoded_images,
+                                                                                                     encoded_videos,
+                                                                                                     vlm_perf_metrics[i],
+                                                                                                     recalculate_merged_embeddings,
+                                                                                                     image_sequence,
+                                                                                                     video_sequence);
+                    input_embeds_list.push_back(std::move(embeds));
+                    token_type_ids_list.push_back(std::move(tt_ids));
+                } else {
+                    input_embeds_list.emplace_back(m_inputs_embedder->get_inputs_embeds(unified_prompt, encoded_images, encoded_videos, vlm_perf_metrics[i], recalculate_merged_embeddings, image_sequence, video_sequence));
+                }
             }
+
+            mm.collecting = false;
 
             position_ids_list.push_back(m_inputs_embedder->get_position_ids(input_embeds_list[i].get_shape()[1], 0));
 
             lm_extra_inputs_list.push_back(deep_copy_tensors_map(m_inputs_embedder->get_lm_extra_inputs()));
-        
+
             auto end_get_inputs_embeds = std::chrono::steady_clock::now();
             vlm_perf_metrics[i].vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
+            vlm_perf_metrics[i].vlm_raw_metrics.vision_encoder_durations.emplace_back(mm.vision_encoder_us);
+            vlm_perf_metrics[i].vlm_raw_metrics.tokenizer_durations.emplace_back(mm.tokenizer_us);
+            vlm_perf_metrics[i].vlm_raw_metrics.text_embeddings_durations.emplace_back(mm.text_embeddings_us);
+            vlm_perf_metrics[i].vlm_raw_metrics.vision_embeddings_merger_durations.emplace_back(mm.vision_embeddings_merger_us);
+            vlm_perf_metrics[i].vlm_raw_metrics.vision_embeddings_pos_durations.emplace_back(mm.vision_embeddings_pos_us);
         }
     }
     std::vector<VLMDecodedResults> results;

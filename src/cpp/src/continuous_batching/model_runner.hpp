@@ -10,6 +10,7 @@
 #include <openvino/runtime/infer_request.hpp>
 
 #include "visual_language/embedding_model.hpp"
+#include "chrome_trace.hpp"
 #include "sequence_group.hpp"
 #include "continuous_batching/scheduler.hpp"
 #include "continuous_batching/timer.hpp"
@@ -766,6 +767,7 @@ public:
 
         {
             static ManualTimer timer("pure generate inference");
+            ov::genai::ScopedTrace trace("LanguageModel(CB_infer)");
             timer.start();
             m_request.infer();
             timer.end();

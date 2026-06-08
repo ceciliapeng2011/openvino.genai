@@ -11,14 +11,54 @@ MeanStdPair VLMPerfMetrics::get_prepare_embeddings_duration() {
     return prepare_embeddings_duration;
 }
 
+MeanStdPair VLMPerfMetrics::get_vision_encoder_duration() {
+    evaluate_statistics();
+    return vision_encoder_duration;
+}
+
+MeanStdPair VLMPerfMetrics::get_tokenizer_duration() {
+    evaluate_statistics();
+    return tokenizer_duration;
+}
+
+MeanStdPair VLMPerfMetrics::get_text_embeddings_duration() {
+    evaluate_statistics();
+    return text_embeddings_duration;
+}
+
+MeanStdPair VLMPerfMetrics::get_vision_embeddings_merger_duration() {
+    evaluate_statistics();
+    return vision_embeddings_merger_duration;
+}
+
+MeanStdPair VLMPerfMetrics::get_vision_embeddings_pos_duration() {
+    evaluate_statistics();
+    return vision_embeddings_pos_duration;
+}
+
+MeanStdPair VLMPerfMetrics::get_lm_prefill_duration() {
+    evaluate_statistics();
+    return lm_prefill_duration;
+}
+
 void VLMPerfMetrics::evaluate_statistics(std::optional<TimePoint> start_time) {
     if (m_evaluated) {
         return;
     }
 
     prepare_embeddings_duration = ov::genai::calc_mean_and_std(vlm_raw_metrics.prepare_embeddings_durations);
+    vision_encoder_duration = ov::genai::calc_mean_and_std(vlm_raw_metrics.vision_encoder_durations);
+    tokenizer_duration = ov::genai::calc_mean_and_std(vlm_raw_metrics.tokenizer_durations);
+    text_embeddings_duration = ov::genai::calc_mean_and_std(vlm_raw_metrics.text_embeddings_durations);
+    vision_embeddings_merger_duration = ov::genai::calc_mean_and_std(vlm_raw_metrics.vision_embeddings_merger_durations);
+    vision_embeddings_pos_duration = ov::genai::calc_mean_and_std(vlm_raw_metrics.vision_embeddings_pos_durations);
+    lm_prefill_duration = ov::genai::calc_mean_and_std(vlm_raw_metrics.lm_prefill_durations);
     PerfMetrics::evaluate_statistics(start_time);
 };
+
+static void concat_vectors(std::vector<MicroSeconds>& dst, const std::vector<MicroSeconds>& src) {
+    dst.insert(dst.end(), src.begin(), src.end());
+}
 
 VLMPerfMetrics VLMPerfMetrics::operator+(const VLMPerfMetrics& right) const {
     PerfMetrics base_result = PerfMetrics::operator+(right);
@@ -26,11 +66,13 @@ VLMPerfMetrics VLMPerfMetrics::operator+(const VLMPerfMetrics& right) const {
 
     result.vlm_raw_metrics = vlm_raw_metrics;
 
-    auto& result_prepare_embeddings_durations = result.vlm_raw_metrics.prepare_embeddings_durations;
-    auto& right_prepare_embeddings_durations = right.vlm_raw_metrics.prepare_embeddings_durations;
-    result_prepare_embeddings_durations.insert(result_prepare_embeddings_durations.end(),
-                                                right_prepare_embeddings_durations.begin(),
-                                                right_prepare_embeddings_durations.end());
+    concat_vectors(result.vlm_raw_metrics.prepare_embeddings_durations, right.vlm_raw_metrics.prepare_embeddings_durations);
+    concat_vectors(result.vlm_raw_metrics.vision_encoder_durations, right.vlm_raw_metrics.vision_encoder_durations);
+    concat_vectors(result.vlm_raw_metrics.tokenizer_durations, right.vlm_raw_metrics.tokenizer_durations);
+    concat_vectors(result.vlm_raw_metrics.text_embeddings_durations, right.vlm_raw_metrics.text_embeddings_durations);
+    concat_vectors(result.vlm_raw_metrics.vision_embeddings_merger_durations, right.vlm_raw_metrics.vision_embeddings_merger_durations);
+    concat_vectors(result.vlm_raw_metrics.vision_embeddings_pos_durations, right.vlm_raw_metrics.vision_embeddings_pos_durations);
+    concat_vectors(result.vlm_raw_metrics.lm_prefill_durations, right.vlm_raw_metrics.lm_prefill_durations);
     return result;
 }
 }

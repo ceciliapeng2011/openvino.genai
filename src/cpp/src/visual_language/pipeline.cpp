@@ -3,6 +3,7 @@
 
 #include "openvino/genai/visual_language/pipeline.hpp"
 
+#include <cstdio>
 #include <optional>
 #include <random>
 
@@ -23,6 +24,7 @@
 #include "visual_language/vision_registry.hpp"
 #include "visual_language/vlm_chat_context.hpp"
 #include "visual_language/vlm_config.hpp"
+#include "chrome_trace.hpp"
 
 using namespace ov::genai;
 
@@ -331,8 +333,20 @@ public:
         m_inputs_embedder->set_vision_token_pruning_config(generation_config.pruning_ratio,
                                                            generation_config.relevance_weight);
 
-        auto encoded_images = m_inputs_embedder->encode_images(images);
-        auto encoded_videos = m_inputs_embedder->encode_videos(videos, videos_metadata);
+        auto& mm = get_model_metrics();
+        mm.reset();
+        mm.collecting = true;
+
+        std::vector<EncodedImage> encoded_images;
+        {
+            ScopedTrace trace("EncodeImages");
+            encoded_images = m_inputs_embedder->encode_images(images);
+        }
+        std::vector<EncodedVideo> encoded_videos;
+        {
+            ScopedTrace trace("EncodeVideos");
+            encoded_videos = m_inputs_embedder->encode_videos(videos, videos_metadata);
+        }
         auto [unified_prompt, image_sequence, video_sequence] = m_inputs_embedder->normalize_prompt(prompt, m_image_id, m_video_id, encoded_images, encoded_videos);
 
         if (m_is_chat_conversation) {
@@ -463,7 +477,15 @@ public:
         // Evaluate statistics
         decoded.perf_metrics.m_evaluated = false;
         decoded.perf_metrics.evaluate_statistics(generate_start_time);
+        if (!decoded.perf_metrics.raw_metrics.m_token_infer_durations.empty()) {
+            decoded.perf_metrics.vlm_raw_metrics.lm_prefill_durations.emplace_back(
+                decoded.perf_metrics.raw_metrics.m_token_infer_durations[0]);
+        }
 
+        // Emit aggregate pipeline metrics to chrome trace
+        emit_pipeline_trace_events(decoded.perf_metrics, generate_start_time, generate_end_time);
+
+        ChromeTrace::get_instance().flush();
         return decoded;
     }
 
@@ -510,6 +532,10 @@ public:
 
         m_inputs_embedder->set_vision_token_pruning_config(generation_config.pruning_ratio,
                                                            generation_config.relevance_weight);
+
+        auto& mm = get_model_metrics();
+        mm.reset();
+        mm.collecting = true;
 
         VLMChatContext chat_context(history, m_vision_registry, *m_inputs_embedder);
 
@@ -598,16 +624,32 @@ public:
         res_raw_counters.chat_template_durations.insert(res_raw_counters.chat_template_durations.end(), raw_counters.chat_template_durations.begin(), raw_counters.chat_template_durations.end());
 
         // VLM specific perf metrics
-        decoded.perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.insert(
-            decoded.perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.end(),
-            perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.begin(),
-            perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.end()
-        );
+        auto& dst_vlm = decoded.perf_metrics.vlm_raw_metrics;
+        auto& src_vlm = perf_metrics.vlm_raw_metrics;
+        dst_vlm.prepare_embeddings_durations.insert(dst_vlm.prepare_embeddings_durations.end(),
+            src_vlm.prepare_embeddings_durations.begin(), src_vlm.prepare_embeddings_durations.end());
+        dst_vlm.vision_encoder_durations.insert(dst_vlm.vision_encoder_durations.end(),
+            src_vlm.vision_encoder_durations.begin(), src_vlm.vision_encoder_durations.end());
+        dst_vlm.tokenizer_durations.insert(dst_vlm.tokenizer_durations.end(),
+            src_vlm.tokenizer_durations.begin(), src_vlm.tokenizer_durations.end());
+        dst_vlm.vision_embeddings_merger_durations.insert(dst_vlm.vision_embeddings_merger_durations.end(),
+            src_vlm.vision_embeddings_merger_durations.begin(), src_vlm.vision_embeddings_merger_durations.end());
+        dst_vlm.text_embeddings_durations.insert(dst_vlm.text_embeddings_durations.end(),
+            src_vlm.text_embeddings_durations.begin(), src_vlm.text_embeddings_durations.end());
+        dst_vlm.vision_embeddings_pos_durations.insert(dst_vlm.vision_embeddings_pos_durations.end(),
+            src_vlm.vision_embeddings_pos_durations.begin(), src_vlm.vision_embeddings_pos_durations.end());
 
         // Evaluate statistics
         decoded.perf_metrics.m_evaluated = false;
         decoded.perf_metrics.evaluate_statistics(generate_start_time);
+        if (!decoded.perf_metrics.raw_metrics.m_token_infer_durations.empty()) {
+            decoded.perf_metrics.vlm_raw_metrics.lm_prefill_durations.emplace_back(
+                decoded.perf_metrics.raw_metrics.m_token_infer_durations[0]);
+        }
 
+        emit_pipeline_trace_events(decoded.perf_metrics, generate_start_time, generate_end_time);
+
+        ChromeTrace::get_instance().flush();
         return decoded;
     }
 
@@ -666,6 +708,43 @@ public:
     }
 
 private:
+    void emit_pipeline_trace_events(const VLMPerfMetrics& metrics,
+                                    std::chrono::steady_clock::time_point generate_start_time,
+                                    std::chrono::steady_clock::time_point generate_end_time) {
+        auto& trace = ChromeTrace::get_instance();
+        if (!trace.is_enabled()) return;
+
+        auto gen_dur_ms = std::chrono::duration_cast<std::chrono::microseconds>(generate_end_time - generate_start_time).count() / 1000.0;
+        GENAI_INFO("[TRACE] [%s] Generate: %.3f ms", trace_timestamp().c_str(), gen_dur_ms);
+        trace.add_event_from_timepoints("Generate", "pipeline", generate_start_time, generate_end_time, 1);
+
+        if (!metrics.raw_metrics.m_times_to_first_token.empty()) {
+            auto ttft_dur_us = static_cast<int64_t>(metrics.raw_metrics.m_times_to_first_token[0].count());
+            GENAI_INFO("[TRACE] [%s] TTFT: %.3f ms", trace_timestamp().c_str(), ttft_dur_us / 1000.0);
+            trace.add_metric_event("TTFT", "pipeline", generate_start_time, ttft_dur_us, 1);
+        }
+
+        if (!metrics.vlm_raw_metrics.prepare_embeddings_durations.empty() &&
+            !metrics.raw_metrics.m_token_infer_durations.empty() &&
+            !metrics.raw_metrics.m_times_to_first_token.empty()) {
+            auto embed_dur_us = static_cast<int64_t>(metrics.vlm_raw_metrics.prepare_embeddings_durations[0].count());
+            GENAI_INFO("[TRACE] [%s] EmbeddingsPreparationTime: %.3f ms", trace_timestamp().c_str(), embed_dur_us / 1000.0);
+            auto lm_prefill_us = static_cast<int64_t>(metrics.raw_metrics.m_token_infer_durations[0].count());
+            auto ttft_dur_us = static_cast<int64_t>(metrics.raw_metrics.m_times_to_first_token[0].count());
+            auto embed_end = generate_start_time + std::chrono::microseconds(ttft_dur_us - lm_prefill_us);
+            auto embed_start = embed_end - std::chrono::microseconds(embed_dur_us);
+            trace.add_event_from_timepoints("EmbeddingsPreparationTime", "pipeline", embed_start, embed_end, 1);
+        }
+
+        if (metrics.tpot.mean > 0 && !metrics.raw_metrics.m_new_token_times.empty()) {
+            auto first_tok_time = metrics.raw_metrics.m_new_token_times[0];
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "TPOT_phase(avg=%.2fms)", metrics.tpot.mean);
+            GENAI_INFO("[TRACE] [%s] %s", trace_timestamp().c_str(), buf);
+            trace.add_event_from_timepoints(std::string(buf), "pipeline", first_tok_time, generate_end_time, 1);
+        }
+    }
+
     void reset_language_state() {
         if (m_adapter_controller) {
             // Preserve adapter-owned state variables
@@ -720,9 +799,22 @@ private:
         bool recalculate_merged_embeddings = encoded_images.size() > 0 || encoded_videos.size() > 0;
 
         auto start_get_inputs_embeds = std::chrono::steady_clock::now();
-        if (m_inputs_embedder->has_token_type_ids()) {
-            std::tie(inputs_embeds, token_type_ids) =
-                m_inputs_embedder->get_inputs_embeds_with_token_type_ids(
+        {
+            ScopedTrace embeddings_trace("EmbeddingsPreparation");
+            if (m_inputs_embedder->has_token_type_ids()) {
+                std::tie(inputs_embeds, token_type_ids) =
+                    m_inputs_embedder->get_inputs_embeds_with_token_type_ids(
+                        unified_prompt,
+                        encoded_images,
+                        encoded_videos,
+                        perf_metrics,
+                        recalculate_merged_embeddings,
+                        image_sequence,
+                        video_sequence,
+                        history_vision_count
+                    );
+            } else {
+                inputs_embeds = m_inputs_embedder->get_inputs_embeds(
                     unified_prompt,
                     encoded_images,
                     encoded_videos,
@@ -732,20 +824,17 @@ private:
                     video_sequence,
                     history_vision_count
                 );
-        } else {
-            inputs_embeds = m_inputs_embedder->get_inputs_embeds(
-                unified_prompt,
-                encoded_images, 
-                encoded_videos,
-                perf_metrics,
-                recalculate_merged_embeddings,
-                image_sequence,
-                video_sequence,
-                history_vision_count
-            );
+            }
         }
         auto end_get_inputs_embeds = std::chrono::steady_clock::now();
+        auto& mm = get_model_metrics();
+        mm.collecting = false;
         perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
+        perf_metrics.vlm_raw_metrics.vision_encoder_durations.emplace_back(mm.vision_encoder_us);
+        perf_metrics.vlm_raw_metrics.tokenizer_durations.emplace_back(mm.tokenizer_us);
+        perf_metrics.vlm_raw_metrics.text_embeddings_durations.emplace_back(mm.text_embeddings_us);
+        perf_metrics.vlm_raw_metrics.vision_embeddings_merger_durations.emplace_back(mm.vision_embeddings_merger_us);
+        perf_metrics.vlm_raw_metrics.vision_embeddings_pos_durations.emplace_back(mm.vision_embeddings_pos_us);
 
         if (m_is_npu) {
             // Prefill model in NPU is reshaped to NPUW_LLM_MAX_PROMPT_LEN x NPUW_LLM_MAX_PROMPT_LEN
