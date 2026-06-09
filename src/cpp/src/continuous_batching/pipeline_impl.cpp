@@ -561,20 +561,24 @@ ContinuousBatchingPipeline::ContinuousBatchingImpl::generate(const std::vector<o
 
     streamer_ptr->start();
     m_sampler->clear_structured_output_compile_times();
+    bool first_token_produced = false;
     while (has_non_finished_requests()) {
         try {
             const auto infer_start = std::chrono::steady_clock::now();
             step();
-            
+
+            if (!first_token_produced) {
+                // Accumulate LM forward time for all prefill steps, including the final chunk
+                // that produces the first token (m_batch_size>0 but still a prefill step).
+                raw_perf_counters.m_inference_durations[0] += MicroSeconds(m_pipeline_metrics.inference_duration);
+            }
             if (m_batch_size > 0) {
                 const auto infer_end = std::chrono::steady_clock::now();
                 const auto infer_ms = PerfMetrics::get_microsec(infer_end - infer_start);
                 raw_perf_counters.m_token_infer_durations.emplace_back(infer_ms);
                 raw_perf_counters.m_new_token_times.emplace_back(infer_end);
                 raw_perf_counters.m_batch_sizes.emplace_back(m_batch_size);
-            } else {
-                // Prefill step: no token produced yet; accumulate LM forward time for lm_prefill_durations.
-                raw_perf_counters.m_inference_durations[0] += MicroSeconds(m_pipeline_metrics.inference_duration);
+                first_token_produced = true;
             }
         } catch (...) {
             drop_requests(); // remove all requests from pipeline state in case of exception

@@ -12,8 +12,6 @@ namespace ov::genai {
 struct OPENVINO_GENAI_EXPORTS VLMRawPerfMetrics {
     /** @brief Duration of preparation of embeddings */
     std::vector<MicroSeconds> prepare_embeddings_durations;
-    /** @brief Offset of EmbeddingsPreparation start from generate_start (for exact chrome trace placement) */
-    std::vector<MicroSeconds> prepare_embeddings_offsets;
     /** @brief Per-model durations within TTFT */
     std::vector<MicroSeconds> vision_encoder_durations;
     std::vector<MicroSeconds> tokenizer_durations;

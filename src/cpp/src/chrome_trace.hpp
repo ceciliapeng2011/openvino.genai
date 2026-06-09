@@ -82,9 +82,6 @@ private:
         if (env && std::string(env).size() > 0) {
             m_enabled = true;
             m_output_path = env;
-        } else {
-            m_enabled = (get_cur_log_level() >= ov::log::Level::INFO);
-            m_output_path = "openvino_genai_trace.json";
         }
     }
 

@@ -726,14 +726,9 @@ private:
             trace.add_metric_event("TTFT", "pipeline", generate_start_time, ttft_dur_us, 1);
         }
 
-        if (!metrics.vlm_raw_metrics.prepare_embeddings_durations.empty() &&
-            !metrics.vlm_raw_metrics.prepare_embeddings_offsets.empty()) {
+        if (!metrics.vlm_raw_metrics.prepare_embeddings_durations.empty()) {
             auto embed_dur_us = static_cast<int64_t>(metrics.vlm_raw_metrics.prepare_embeddings_durations[0].count());
-            auto embed_offset_us = static_cast<int64_t>(metrics.vlm_raw_metrics.prepare_embeddings_offsets[0].count());
             GENAI_INFO("[TRACE] [%s] EmbeddingsPreparationTime: %.3f ms", trace_timestamp().c_str(), embed_dur_us / 1000.0);
-            auto embed_start = generate_start_time + std::chrono::microseconds(embed_offset_us);
-            auto embed_end = embed_start + std::chrono::microseconds(embed_dur_us);
-            trace.add_event_from_timepoints("EmbeddingsPreparationTime", "pipeline", embed_start, embed_end, 1);
         }
 
         if (metrics.tpot.mean > 0 && !metrics.raw_metrics.m_new_token_times.empty()) {
@@ -801,6 +796,7 @@ private:
 
         auto start_get_inputs_embeds = std::chrono::steady_clock::now();
         {
+            ScopedTrace embeddings_trace("EmbeddingsPreparation", "pipeline");
             if (m_inputs_embedder->has_token_type_ids()) {
                 std::tie(inputs_embeds, token_type_ids) =
                     m_inputs_embedder->get_inputs_embeds_with_token_type_ids(
@@ -830,7 +826,6 @@ private:
         auto& mm = get_model_metrics();
         mm.collecting = false;
         perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
-        perf_metrics.vlm_raw_metrics.prepare_embeddings_offsets.emplace_back(PerfMetrics::get_microsec(start_get_inputs_embeds - generate_start_time));
         perf_metrics.vlm_raw_metrics.vision_encoder_durations.emplace_back(mm.vision_encoder_us);
         perf_metrics.vlm_raw_metrics.tokenizer_durations.emplace_back(mm.tokenizer_us);
         perf_metrics.vlm_raw_metrics.text_embeddings_durations.emplace_back(mm.text_embeddings_us);

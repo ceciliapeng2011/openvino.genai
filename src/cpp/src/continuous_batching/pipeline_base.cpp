@@ -383,8 +383,13 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
             original_prompt_ids_list.push_back(prompt_ids);
         }
 
+        auto& mm = ov::genai::get_model_metrics();
+        mm.reset();
+        mm.collecting = true;
+
         auto start_get_inputs_embeds = std::chrono::steady_clock::now();
         {
+            ov::genai::ScopedTrace embeddings_trace("EmbeddingsPreparation", "pipeline");
             if (m_inputs_embedder->has_token_type_ids()) {
                 auto [embeds, tt_ids] = m_inputs_embedder->get_inputs_embeds_with_token_type_ids(templated_history,
                                                                                                  m_history_images,
@@ -408,8 +413,13 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
             }
         }
         auto end_get_inputs_embeds = std::chrono::steady_clock::now();
+        mm.collecting = false;
         vlm_perf_metrics[0].vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
-        vlm_perf_metrics[0].vlm_raw_metrics.prepare_embeddings_offsets.emplace_back(PerfMetrics::get_microsec(start_get_inputs_embeds - generate_start_time));
+        vlm_perf_metrics[0].vlm_raw_metrics.vision_encoder_durations.emplace_back(mm.vision_encoder_us);
+        vlm_perf_metrics[0].vlm_raw_metrics.tokenizer_durations.emplace_back(mm.tokenizer_us);
+        vlm_perf_metrics[0].vlm_raw_metrics.text_embeddings_durations.emplace_back(mm.text_embeddings_us);
+        vlm_perf_metrics[0].vlm_raw_metrics.vision_embeddings_merger_durations.emplace_back(mm.vision_embeddings_merger_us);
+        vlm_perf_metrics[0].vlm_raw_metrics.vision_embeddings_pos_durations.emplace_back(mm.vision_embeddings_pos_us);
 
         position_ids_list.push_back(m_inputs_embedder->get_position_ids(input_embeds_list[0].get_shape()[1], 0));
 
@@ -449,6 +459,7 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
 
             auto start_get_inputs_embeds = std::chrono::steady_clock::now();
             {
+                ov::genai::ScopedTrace embeddings_trace("EmbeddingsPreparation", "pipeline");
                 if (m_inputs_embedder->has_token_type_ids()) {
                     auto [embeds, tt_ids] = m_inputs_embedder->get_inputs_embeds_with_token_type_ids(unified_prompt,
                                                                                                      encoded_images,
@@ -465,7 +476,6 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
             }
             auto end_get_inputs_embeds = std::chrono::steady_clock::now();
             vlm_perf_metrics[i].vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
-            vlm_perf_metrics[i].vlm_raw_metrics.prepare_embeddings_offsets.emplace_back(PerfMetrics::get_microsec(start_get_inputs_embeds - generate_start_time));
 
             mm.collecting = false;
 
@@ -602,13 +612,11 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
         m_inputs_embedder->set_vision_token_pruning_config(generation_config.pruning_ratio,
                                                            generation_config.relevance_weight);
 
-        auto start_get_inputs_embeds = std::chrono::steady_clock::now();
-        
         VLMChatContext chat_context(histories[i], m_vision_registry, *m_inputs_embedder);
         chat_contexts.push_back(std::move(chat_context));
-    
+
         auto processed_chat_data = chat_contexts[i].process(images_vector[i], videos_vector[i], videos_metadata_vector[i]);
-    
+
         const auto template_start = std::chrono::steady_clock::now();
         std::string templated_history = m_tokenizer.apply_chat_template(
             processed_chat_data.normalized_history,
@@ -617,38 +625,50 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
         vlm_perf_metrics[i].raw_metrics.chat_template_durations.emplace_back(
             PerfMetrics::get_microsec(std::chrono::steady_clock::now() - template_start)
         );
-    
+
         m_inputs_embedder->set_apply_chat_template_status(false);
-    
-        if (m_inputs_embedder->has_token_type_ids()) {
-            auto [embeds, tt_ids] = m_inputs_embedder->get_inputs_embeds_with_token_type_ids(templated_history,
-                                                                                            processed_chat_data.encoded_images,
-                                                                                            processed_chat_data.encoded_videos,
-                                                                                            vlm_perf_metrics[i],
-                                                                                            recalculate_merged_embeddings,
-                                                                                            processed_chat_data.image_sequence,
-                                                                                            processed_chat_data.video_sequence,
-                                                                                            processed_chat_data.vision_counts);
-            input_embeds_list.push_back(std::move(embeds));
-            token_type_ids_list.push_back(std::move(tt_ids));
-        } else {
-            input_embeds_list.emplace_back(m_inputs_embedder->get_inputs_embeds(templated_history,
-                                                                                processed_chat_data.encoded_images,
-                                                                                processed_chat_data.encoded_videos,
-                                                                                vlm_perf_metrics[i],
-                                                                                recalculate_merged_embeddings,
-                                                                                processed_chat_data.image_sequence,
-                                                                                processed_chat_data.video_sequence,
-                                                                                processed_chat_data.vision_counts));
+
+        auto& mm = ov::genai::get_model_metrics();
+        mm.reset();
+        mm.collecting = true;
+
+        auto start_get_inputs_embeds = std::chrono::steady_clock::now();
+        {
+            ov::genai::ScopedTrace embeddings_trace("EmbeddingsPreparation", "pipeline");
+            if (m_inputs_embedder->has_token_type_ids()) {
+                auto [embeds, tt_ids] = m_inputs_embedder->get_inputs_embeds_with_token_type_ids(templated_history,
+                                                                                                processed_chat_data.encoded_images,
+                                                                                                processed_chat_data.encoded_videos,
+                                                                                                vlm_perf_metrics[i],
+                                                                                                recalculate_merged_embeddings,
+                                                                                                processed_chat_data.image_sequence,
+                                                                                                processed_chat_data.video_sequence,
+                                                                                                processed_chat_data.vision_counts);
+                input_embeds_list.push_back(std::move(embeds));
+                token_type_ids_list.push_back(std::move(tt_ids));
+            } else {
+                input_embeds_list.emplace_back(m_inputs_embedder->get_inputs_embeds(templated_history,
+                                                                                    processed_chat_data.encoded_images,
+                                                                                    processed_chat_data.encoded_videos,
+                                                                                    vlm_perf_metrics[i],
+                                                                                    recalculate_merged_embeddings,
+                                                                                    processed_chat_data.image_sequence,
+                                                                                    processed_chat_data.video_sequence,
+                                                                                    processed_chat_data.vision_counts));
+            }
         }
+        auto end_get_inputs_embeds = std::chrono::steady_clock::now();
+        mm.collecting = false;
+        vlm_perf_metrics[i].vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
+        vlm_perf_metrics[i].vlm_raw_metrics.vision_encoder_durations.emplace_back(mm.vision_encoder_us);
+        vlm_perf_metrics[i].vlm_raw_metrics.tokenizer_durations.emplace_back(mm.tokenizer_us);
+        vlm_perf_metrics[i].vlm_raw_metrics.text_embeddings_durations.emplace_back(mm.text_embeddings_us);
+        vlm_perf_metrics[i].vlm_raw_metrics.vision_embeddings_merger_durations.emplace_back(mm.vision_embeddings_merger_us);
+        vlm_perf_metrics[i].vlm_raw_metrics.vision_embeddings_pos_durations.emplace_back(mm.vision_embeddings_pos_us);
 
         position_ids_list.push_back(m_inputs_embedder->get_position_ids(input_embeds_list[i].get_shape()[1], 0));
 
         lm_extra_inputs_list.push_back(deep_copy_tensors_map(m_inputs_embedder->get_lm_extra_inputs()));
-    
-        auto end_get_inputs_embeds = std::chrono::steady_clock::now();
-        vlm_perf_metrics[i].vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
-        vlm_perf_metrics[i].vlm_raw_metrics.prepare_embeddings_offsets.emplace_back(PerfMetrics::get_microsec(start_get_inputs_embeds - generate_start_time));
     }
 
     std::vector<EncodedGenerationResult> encoded_results = generate(input_embeds_list,

@@ -67,7 +67,6 @@ VLMPerfMetrics VLMPerfMetrics::operator+(const VLMPerfMetrics& right) const {
     result.vlm_raw_metrics = vlm_raw_metrics;
 
     concat_vectors(result.vlm_raw_metrics.prepare_embeddings_durations, right.vlm_raw_metrics.prepare_embeddings_durations);
-    concat_vectors(result.vlm_raw_metrics.prepare_embeddings_offsets, right.vlm_raw_metrics.prepare_embeddings_offsets);
     concat_vectors(result.vlm_raw_metrics.vision_encoder_durations, right.vlm_raw_metrics.vision_encoder_durations);
     concat_vectors(result.vlm_raw_metrics.tokenizer_durations, right.vlm_raw_metrics.tokenizer_durations);
     concat_vectors(result.vlm_raw_metrics.text_embeddings_durations, right.vlm_raw_metrics.text_embeddings_durations);
