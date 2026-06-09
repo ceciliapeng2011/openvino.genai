@@ -385,7 +385,6 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
 
         auto start_get_inputs_embeds = std::chrono::steady_clock::now();
         {
-            ov::genai::ScopedTrace trace("EmbeddingsPreparation");
             if (m_inputs_embedder->has_token_type_ids()) {
                 auto [embeds, tt_ids] = m_inputs_embedder->get_inputs_embeds_with_token_type_ids(templated_history,
                                                                                                  m_history_images,
@@ -450,7 +449,6 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
 
             auto start_get_inputs_embeds = std::chrono::steady_clock::now();
             {
-                ov::genai::ScopedTrace trace("EmbeddingsPreparation");
                 if (m_inputs_embedder->has_token_type_ids()) {
                     auto [embeds, tt_ids] = m_inputs_embedder->get_inputs_embeds_with_token_type_ids(unified_prompt,
                                                                                                      encoded_images,

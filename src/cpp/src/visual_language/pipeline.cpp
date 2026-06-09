@@ -801,7 +801,6 @@ private:
 
         auto start_get_inputs_embeds = std::chrono::steady_clock::now();
         {
-            ScopedTrace embeddings_trace("EmbeddingsPreparation");
             if (m_inputs_embedder->has_token_type_ids()) {
                 std::tie(inputs_embeds, token_type_ids) =
                     m_inputs_embedder->get_inputs_embeds_with_token_type_ids(
