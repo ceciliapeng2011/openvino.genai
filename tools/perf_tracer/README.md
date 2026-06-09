@@ -16,12 +16,6 @@ OPENVINO_CHROME_TRACE=/tmp/genai_trace.json \
   python benchmark_vlm.py -m $MODEL_DIR -d GPU --cb_config '...'
 ```
 
-Alternatively, enable via log level (writes to `openvino_genai_trace.json` in CWD):
-
-```bash
-OPENVINO_LOG_LEVEL=3 python benchmark_vlm.py ...
-```
-
 ### Step 2: Capture CLIntercept GPU Kernel Trace
 
 Use `cliloader` with `ChromePerformanceTiming` enabled:
@@ -65,26 +59,6 @@ You will see two process rows:
 
 Events are time-aligned so you can directly correlate which GPU kernels belong to which model call.
 
-## GenAI Trace Events
-
-All events nest on a single thread (`tid=1`):
-
-```
-Generate
-├── TTFT
-│   ├── EncodeImages
-│   │   └── VisionEncoder(ov_preprocess) x N tiles
-│   ├── EmbeddingsPreparationTime
-│   │   ├── Tokenizer(encode)
-│   │   ├── TextEmbeddings
-│   │   ├── VisionEmbeddingsMerger(Qwen3VL)
-│   │   └── VisionEmbeddingsPos(patched)
-│   └── LanguageModel(prefill/CB_infer)
-└── TPOT_phase(avg=X.XXms)
-      ├── TextEmbeddings (per token)
-      └── LanguageModel (per token)
-```
-
 ## CLIntercept Trace Events
 
 GPU kernel events appear on separate thread lanes per OpenCL queue. Common kernels:
@@ -119,22 +93,8 @@ Both traces use the same `steady_clock` time base:
 
 The merge script converts CLIntercept relative timestamps to absolute, then optionally normalizes both to start from 0.
 
-## Per-Model Metrics (No Trace Required)
-
-TTFT breakdown is also available programmatically via `perf_metrics`:
-
-```python
-perf_metrics = result.perf_metrics
-print(f"Vision encoder:  {perf_metrics.get_vision_encoder_duration().mean:.2f} ms")
-print(f"Tokenizer:       {perf_metrics.get_tokenizer_duration().mean:.2f} ms")
-print(f"Text embeddings: {perf_metrics.get_text_embeddings_duration().mean:.2f} ms")
-print(f"Merger:          {perf_metrics.get_vision_embeddings_merger_duration().mean:.2f} ms")
-print(f"Position:        {perf_metrics.get_vision_embeddings_pos_duration().mean:.2f} ms")
-print(f"LM prefill:      {perf_metrics.get_lm_prefill_duration().mean:.2f} ms")
-```
-
 ## Notes
 
-- The first inference on each model is significantly slower (~100x for VisionEncoder) due to GPU JIT kernel compilation. Subsequent calls use cached kernels.
 - `CLI_InOrderQueue=1` is recommended for CLIntercept to get accurate per-kernel timing without queue overlap.
 - For very long runs, the merged file can be large (>100MB). Consider limiting `--infer_count` when capturing traces.
+- For GenAI trace event types, hierarchy, per-model metrics, and pipeline path details, see [SKILL.md](SKILL.md).
