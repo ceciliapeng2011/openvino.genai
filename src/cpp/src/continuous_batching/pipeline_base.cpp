@@ -421,9 +421,14 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
         vlm_perf_metrics[0].vlm_raw_metrics.vision_embeddings_merger_durations.emplace_back(mm.vision_embeddings_merger_us);
         vlm_perf_metrics[0].vlm_raw_metrics.vision_embeddings_pos_durations.emplace_back(mm.vision_embeddings_pos_us);
 
-        position_ids_list.push_back(m_inputs_embedder->get_position_ids(input_embeds_list[0].get_shape()[1], 0));
-
-        lm_extra_inputs_list.push_back(m_inputs_embedder->get_lm_extra_inputs());
+        {
+            ov::genai::ScopedTrace trace("PositionIdsSetup", "pipeline");
+            position_ids_list.push_back(m_inputs_embedder->get_position_ids(input_embeds_list[0].get_shape()[1], 0));
+        }
+        {
+            ov::genai::ScopedTrace trace("LMExtraInputsSetup", "pipeline");
+            lm_extra_inputs_list.push_back(m_inputs_embedder->get_lm_extra_inputs());
+        }
 
     } else {
         for (size_t i = 0; i < prompts.size(); i++) {
@@ -479,9 +484,14 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
 
             mm.collecting = false;
 
-            position_ids_list.push_back(m_inputs_embedder->get_position_ids(input_embeds_list[i].get_shape()[1], 0));
-
-            lm_extra_inputs_list.push_back(deep_copy_tensors_map(m_inputs_embedder->get_lm_extra_inputs()));
+            {
+                ov::genai::ScopedTrace trace("PositionIdsSetup", "pipeline");
+                position_ids_list.push_back(m_inputs_embedder->get_position_ids(input_embeds_list[i].get_shape()[1], 0));
+            }
+            {
+                ov::genai::ScopedTrace trace("LMExtraInputsSetup", "pipeline");
+                lm_extra_inputs_list.push_back(deep_copy_tensors_map(m_inputs_embedder->get_lm_extra_inputs()));
+            }
 
             vlm_perf_metrics[i].vlm_raw_metrics.vision_encoder_durations.emplace_back(mm.vision_encoder_us);
             vlm_perf_metrics[i].vlm_raw_metrics.tokenizer_durations.emplace_back(mm.tokenizer_us);
@@ -666,9 +676,14 @@ ContinuousBatchingPipeline::IContinuousBatchingPipeline::generate(
         vlm_perf_metrics[i].vlm_raw_metrics.vision_embeddings_merger_durations.emplace_back(mm.vision_embeddings_merger_us);
         vlm_perf_metrics[i].vlm_raw_metrics.vision_embeddings_pos_durations.emplace_back(mm.vision_embeddings_pos_us);
 
-        position_ids_list.push_back(m_inputs_embedder->get_position_ids(input_embeds_list[i].get_shape()[1], 0));
-
-        lm_extra_inputs_list.push_back(deep_copy_tensors_map(m_inputs_embedder->get_lm_extra_inputs()));
+        {
+            ov::genai::ScopedTrace trace("PositionIdsSetup", "pipeline");
+            position_ids_list.push_back(m_inputs_embedder->get_position_ids(input_embeds_list[i].get_shape()[1], 0));
+        }
+        {
+            ov::genai::ScopedTrace trace("LMExtraInputsSetup", "pipeline");
+            lm_extra_inputs_list.push_back(deep_copy_tensors_map(m_inputs_embedder->get_lm_extra_inputs()));
+        }
     }
 
     std::vector<EncodedGenerationResult> encoded_results = generate(input_embeds_list,

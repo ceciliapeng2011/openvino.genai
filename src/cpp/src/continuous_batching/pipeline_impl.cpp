@@ -21,6 +21,7 @@
 #include "lora/helper.hpp"
 #include "continuous_batching/cache/cache_state_dumper.hpp"
 #include "continuous_batching/cache/cache_orchestrator.hpp"
+#include "chrome_trace.hpp"
 
 namespace {
 
@@ -293,15 +294,23 @@ ContinuousBatchingPipeline::ContinuousBatchingImpl::add_request(
 
     std::shared_ptr<SequenceGroup> sequence_group;
     if (m_model_input_type == ModelInputType::EMBEDDINGS) {
-        const auto [position_ids, rope_delta] = m_inputs_embedder->get_position_ids(input_ids.get_shape()[1], 0);
-        sequence_group = std::make_shared<SequenceGroup>(request_id, 
-                                                         input_ids, 
-                                                         sampling_params_copy, 
-                                                         token_type_ids,
-                                                         lm_extra_inputs,
-                                                         position_ids, 
-                                                         rope_delta,
-                                                         prompt_ids);
+        ov::Tensor position_ids;
+        std::optional<int64_t> rope_delta;
+        {
+            ov::genai::ScopedTrace trace("CB_AddRequest_GetPositionIds", "pipeline");
+            std::tie(position_ids, rope_delta) = m_inputs_embedder->get_position_ids(input_ids.get_shape()[1], 0);
+        }
+        {
+            ov::genai::ScopedTrace trace("CB_AddRequest_SequenceGroupCtor", "pipeline");
+            sequence_group = std::make_shared<SequenceGroup>(request_id,
+                                                             input_ids,
+                                                             sampling_params_copy,
+                                                             token_type_ids,
+                                                             lm_extra_inputs,
+                                                             position_ids,
+                                                             rope_delta,
+                                                             prompt_ids);
+        }
     }
     else {
         sequence_group = std::make_shared<SequenceGroup>(request_id,
@@ -310,8 +319,11 @@ ContinuousBatchingPipeline::ContinuousBatchingImpl::add_request(
                                                          token_type_ids);
     }
 
-    if (m_scheduler->get_config().enable_prefix_caching) {
-        m_scheduler->restore_cached_blocks(sequence_group);
+    {
+        ov::genai::ScopedTrace trace("CB_AddRequest_PrefixCacheRestore", "pipeline");
+        if (m_scheduler->get_config().enable_prefix_caching) {
+            m_scheduler->restore_cached_blocks(sequence_group);
+        }
     }
 
     {
@@ -352,14 +364,20 @@ void ContinuousBatchingPipeline::ContinuousBatchingImpl::step() {
     static ManualTimer step_timer("step()");
     step_timer.start();
 
-    _pull_awaiting_requests();
+    {
+        ov::genai::ScopedTrace trace("CB_PullAwaitingRequests", "pipeline");
+        _pull_awaiting_requests();
+    }
 
     Scheduler::Output scheduler_output;
 
     {
         static ManualTimer scheduling_timer("scheduling");
         scheduling_timer.start();
-        scheduler_output = m_scheduler->schedule(m_requests);
+        {
+            ov::genai::ScopedTrace trace("CB_Schedule", "pipeline");
+            scheduler_output = m_scheduler->schedule(m_requests);
+        }
         scheduling_timer.end();
 
         m_pipeline_metrics.cache_size_in_bytes = scheduler_output.m_cache_size_in_bytes;
@@ -395,6 +413,7 @@ void ContinuousBatchingPipeline::ContinuousBatchingImpl::step() {
     ov::Tensor logits;
 
     {
+        ov::genai::ScopedTrace trace("CB_Forward", "pipeline");
         static ManualTimer timer("forward");
         const auto infer_start = std::chrono::steady_clock::now();
         timer.start();
@@ -530,29 +549,32 @@ ContinuousBatchingPipeline::ContinuousBatchingImpl::generate(const std::vector<o
         "Currently streaming is possible only with batch size=1 and only for greedy or multinomial decoding");
 
     std::vector<GenerationHandle> generations;
-    for (size_t request_id = 0; request_id < input_ids.size(); ++request_id) {
-        OPENVINO_ASSERT(1 == input_ids[request_id].get_shape().at(0), "Use multiple tensors to pass a batch.");
-        if (position_ids_list.has_value()) {
-            const auto [position_ids, rope_delta] = (*position_ids_list)[request_id];
-            m_inputs_embedder->set_position_ids(position_ids);
-            if (rope_delta.has_value()) {
-                m_inputs_embedder->set_rope_delta(*rope_delta);
+    {
+        ov::genai::ScopedTrace trace("CB_AddRequests", "pipeline");
+        for (size_t request_id = 0; request_id < input_ids.size(); ++request_id) {
+            OPENVINO_ASSERT(1 == input_ids[request_id].get_shape().at(0), "Use multiple tensors to pass a batch.");
+            if (position_ids_list.has_value()) {
+                const auto [position_ids, rope_delta] = (*position_ids_list)[request_id];
+                m_inputs_embedder->set_position_ids(position_ids);
+                if (rope_delta.has_value()) {
+                    m_inputs_embedder->set_rope_delta(*rope_delta);
+                }
             }
-        }
-        const bool has_valid_token_type_ids = token_type_ids.has_value() && request_id < token_type_ids->size();
-        const bool has_valid_prompt_ids = prompt_ids.has_value() && request_id < prompt_ids->size();
-        const bool has_valid_lm_extra_inputs = lm_extra_inputs_list.has_value() && request_id < lm_extra_inputs_list->size();
+            const bool has_valid_token_type_ids = token_type_ids.has_value() && request_id < token_type_ids->size();
+            const bool has_valid_prompt_ids = prompt_ids.has_value() && request_id < prompt_ids->size();
+            const bool has_valid_lm_extra_inputs = lm_extra_inputs_list.has_value() && request_id < lm_extra_inputs_list->size();
 
-        generations.push_back(
-            add_request(
-                request_id,
-                input_ids[request_id],
-                sampling_params[request_id],
-                has_valid_token_type_ids ? std::make_optional((*token_type_ids)[request_id]) : std::nullopt,
-                has_valid_prompt_ids ? std::make_optional((*prompt_ids)[request_id]) : std::nullopt,
-                has_valid_lm_extra_inputs ? std::make_optional((*lm_extra_inputs_list)[request_id]) : std::nullopt
-            )
-        );
+            generations.push_back(
+                add_request(
+                    request_id,
+                    input_ids[request_id],
+                    sampling_params[request_id],
+                    has_valid_token_type_ids ? std::make_optional((*token_type_ids)[request_id]) : std::nullopt,
+                    has_valid_prompt_ids ? std::make_optional((*prompt_ids)[request_id]) : std::nullopt,
+                    has_valid_lm_extra_inputs ? std::make_optional((*lm_extra_inputs_list)[request_id]) : std::nullopt
+                )
+            );
+        }
     }
 
     auto all_requests = get_awaiting_requests(); // we need to store all requests to get results from them once generation has finished

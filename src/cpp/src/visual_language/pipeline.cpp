@@ -823,14 +823,17 @@ private:
             }
         }
         auto end_get_inputs_embeds = std::chrono::steady_clock::now();
-        auto& mm = get_model_metrics();
-        mm.collecting = false;
-        perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
-        perf_metrics.vlm_raw_metrics.vision_encoder_durations.emplace_back(mm.vision_encoder_us);
-        perf_metrics.vlm_raw_metrics.tokenizer_durations.emplace_back(mm.tokenizer_us);
-        perf_metrics.vlm_raw_metrics.text_embeddings_durations.emplace_back(mm.text_embeddings_us);
-        perf_metrics.vlm_raw_metrics.vision_embeddings_merger_durations.emplace_back(mm.vision_embeddings_merger_us);
-        perf_metrics.vlm_raw_metrics.vision_embeddings_pos_durations.emplace_back(mm.vision_embeddings_pos_us);
+        {
+            ScopedTrace trace("PerfMetricsCollection", "pipeline");
+            auto& mm = get_model_metrics();
+            mm.collecting = false;
+            perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
+            perf_metrics.vlm_raw_metrics.vision_encoder_durations.emplace_back(mm.vision_encoder_us);
+            perf_metrics.vlm_raw_metrics.tokenizer_durations.emplace_back(mm.tokenizer_us);
+            perf_metrics.vlm_raw_metrics.text_embeddings_durations.emplace_back(mm.text_embeddings_us);
+            perf_metrics.vlm_raw_metrics.vision_embeddings_merger_durations.emplace_back(mm.vision_embeddings_merger_us);
+            perf_metrics.vlm_raw_metrics.vision_embeddings_pos_durations.emplace_back(mm.vision_embeddings_pos_us);
+        }
 
         if (m_is_npu) {
             // Prefill model in NPU is reshaped to NPUW_LLM_MAX_PROMPT_LEN x NPUW_LLM_MAX_PROMPT_LEN
@@ -842,22 +845,25 @@ private:
 
         utils::CacheState& cache_state = m_inputs_embedder->get_cache_state();
 
-        if (m_is_chat_conversation) {
-            if (m_use_full_chat_history) {
-                cache_state.reset_state();
-                m_language.reset_state();
-                m_language.get_tensor("attention_mask").set_shape({1, 0});
-            } else {
-                bool needs_full_reset = cache_state.needs_reset();
-                utils::trim_kv_cache(m_language, cache_state, m_adapter_controller);
-                if (needs_full_reset) {
+        {
+            ScopedTrace trace("KVCacheManagement", "pipeline");
+            if (m_is_chat_conversation) {
+                if (m_use_full_chat_history) {
+                    cache_state.reset_state();
+                    m_language.reset_state();
                     m_language.get_tensor("attention_mask").set_shape({1, 0});
+                } else {
+                    bool needs_full_reset = cache_state.needs_reset();
+                    utils::trim_kv_cache(m_language, cache_state, m_adapter_controller);
+                    if (needs_full_reset) {
+                        m_language.get_tensor("attention_mask").set_shape({1, 0});
+                    }
                 }
             }
-        }
 
-        if (m_adapter_controller) {
-            m_adapter_controller->apply(m_language, generation_config.adapters);
+            if (m_adapter_controller) {
+                m_adapter_controller->apply(m_language, generation_config.adapters);
+            }
         }
 
         std::vector<SequenceGroup::Ptr> requests;
@@ -866,17 +872,21 @@ private:
         const size_t history_size = m_language.get_tensor("attention_mask").get_shape().at(1) - cache_state.num_tokens_to_trim;
         const size_t inputs_embeds_size = inputs_embeds.get_shape().at(1);
 
-        std::vector<int64_t> tokenized_history = cache_state.get_state();
-        ov::Tensor prompt_ids(ov::element::i64, { history_size + inputs_embeds_size });
-        OPENVINO_ASSERT(prompt_ids.get_size() >= tokenized_history.size(), "Prompt ids size is less than tokenized history size");
-        std::fill_n(prompt_ids.data<int64_t>(), prompt_ids.get_size(), m_tokenizer.get_pad_token_id());
-        std::copy(tokenized_history.begin(), tokenized_history.end(), prompt_ids.data<int64_t>());
+        ov::Tensor prompt_ids;
+        {
+            ScopedTrace trace("PromptIdsSetup", "pipeline");
+            std::vector<int64_t> tokenized_history = cache_state.get_state();
+            prompt_ids = ov::Tensor(ov::element::i64, { history_size + inputs_embeds_size });
+            OPENVINO_ASSERT(prompt_ids.get_size() >= tokenized_history.size(), "Prompt ids size is less than tokenized history size");
+            std::fill_n(prompt_ids.data<int64_t>(), prompt_ids.get_size(), m_tokenizer.get_pad_token_id());
+            std::copy(tokenized_history.begin(), tokenized_history.end(), prompt_ids.data<int64_t>());
 
-        // Update perf metrics with num_input_tokens
-        perf_metrics.num_input_tokens = prompt_ids.get_size();
+            // Update perf metrics with num_input_tokens
+            perf_metrics.num_input_tokens = prompt_ids.get_size();
 
-        SequenceGroup::Ptr sequence_group = std::make_shared<SequenceGroup>(request_id, prompt_ids, generation_config);
-        requests.push_back(std::move(sequence_group));
+            SequenceGroup::Ptr sequence_group = std::make_shared<SequenceGroup>(request_id, prompt_ids, generation_config);
+            requests.push_back(std::move(sequence_group));
+        }
 
         std::shared_ptr<StreamerBase> streamer_ptr = utils::create_streamer(streamer, m_tokenizer);
 
@@ -884,12 +894,16 @@ private:
             (generation_config.is_greedy_decoding() || generation_config.is_multinomial()),
             "Currently streaming is possible only with batch size=1 and only for greedy or multinomial decoding");
 
-        ov::Tensor new_atten_mask = ov::Tensor{ov::element::i64, { 1, history_size + inputs_embeds_size }};
-        std::fill_n(new_atten_mask.data<int64_t>(), new_atten_mask.get_size(), 1);
-
+        ov::Tensor new_atten_mask;
         ov::Tensor position_ids;
         std::optional<int64_t> rope_delta;
-        std::tie(position_ids, rope_delta) = m_inputs_embedder->get_position_ids(inputs_embeds_size, history_size);
+        {
+            ScopedTrace trace("AttentionAndPositionSetup", "pipeline");
+            new_atten_mask = ov::Tensor{ov::element::i64, { 1, history_size + inputs_embeds_size }};
+            std::fill_n(new_atten_mask.data<int64_t>(), new_atten_mask.get_size(), 1);
+
+            std::tie(position_ids, rope_delta) = m_inputs_embedder->get_position_ids(inputs_embeds_size, history_size);
+        }
 
         const auto& lm_extra_inputs = m_inputs_embedder->get_lm_extra_inputs();
 
