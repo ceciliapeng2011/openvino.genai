@@ -24,7 +24,61 @@ import sys
 
 def load_json_events(path):
     with open(path, 'r') as f:
-        return json.load(f)
+        content = f.read()
+    # Try standard JSON first (single array or object)
+    try:
+        data = json.loads(content)
+        return data if isinstance(data, list) else [data]
+    except json.JSONDecodeError:
+        pass
+    # CLIntercept writes multiple flushes: the first is a valid JSON array,
+    # subsequent flushes may be corrupted (missing opening '[', garbage prefix).
+    # Strategy: parse all valid '['-rooted arrays, then extract individual
+    # '{'-rooted objects from any remaining unparsed content.
+    events = []
+    decoder = json.JSONDecoder()
+    parsed_ranges = []  # (start, end) of successfully parsed arrays
+
+    idx = 0
+    while idx < len(content):
+        next_array = content.find('[', idx)
+        if next_array == -1:
+            break
+        try:
+            obj, end = decoder.raw_decode(content, next_array)
+            if isinstance(obj, list):
+                events.extend(obj)
+                parsed_ranges.append((next_array, end))
+            idx = end
+        except json.JSONDecodeError:
+            idx = next_array + 1
+
+    # Build set of already-covered character positions
+    covered = set()
+    for start, end in parsed_ranges:
+        covered.update(range(start, end))
+
+    # Scan unparsed regions for individual JSON objects
+    idx = 0
+    while idx < len(content):
+        if idx in covered:
+            idx += 1
+            continue
+        next_obj = content.find('{', idx)
+        if next_obj == -1:
+            break
+        if next_obj in covered:
+            idx = next_obj + 1
+            continue
+        try:
+            obj, end = decoder.raw_decode(content, next_obj)
+            if isinstance(obj, dict):
+                events.append(obj)
+            idx = end
+        except json.JSONDecodeError:
+            idx = next_obj + 1
+
+    return events
 
 
 def extract_cli_start_time(cli_events):
