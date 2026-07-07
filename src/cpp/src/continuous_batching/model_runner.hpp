@@ -10,6 +10,7 @@
 #include <openvino/runtime/infer_request.hpp>
 
 #include "visual_language/embedding_model.hpp"
+#include "chrome_trace.hpp"
 #include "sequence_group.hpp"
 #include "continuous_batching/scheduler.hpp"
 #include "continuous_batching/timer.hpp"
@@ -394,6 +395,7 @@ public:
             }
         }
 
+        ov::genai::ScopedTrace forward_prep_trace("CB_ForwardPrep", "pipeline");
         // Use cached pre-allocated tensors instead of creating new ones
         ov::Tensor input_ids = _get_or_resize_tensor(m_cached_input_ids, "input_ids", {total_num_tokens}, ov::element::i64);
         ov::Tensor inputs_embeds = _get_or_resize_tensor(m_cached_inputs_embeds, "inputs_embeds",
@@ -682,11 +684,14 @@ public:
             sequence_group->set_output_seq_len(matmul_gathering_is_available ? output_seq_len : num_scheduled_tokens);
         }
         
+        forward_prep_trace.end();
+
         // Note: A ireq will pre-allocate a USM for each model's input. For tensor optimization, we cache pre-allocated USM gotten from a ireq for these tensors.
         // Since these tensors(except score_aggregation_window) are gotten from a ireq, there's no need to set them again.
         // Score_aggregation_window might be not managed through the cached tensor system in some case as it is created unconditionally, and need to be set to a ireq.
         // To align these tensors' behavior, set each tensor when it is not cached.
 
+        ov::genai::ScopedTrace set_tensor_trace("CB_SetTensors", "pipeline");
         if (sequence_group_type == SequenceGroupType::TOKENS && !m_cached_input_ids) {
             m_request.set_tensor("input_ids", input_ids);
         }
@@ -764,8 +769,11 @@ public:
             m_request.set_tensor("score_aggregation_window", score_aggregation_window);
         }
 
+        set_tensor_trace.end();
+
         {
             static ManualTimer timer("pure generate inference");
+            ov::genai::ScopedTrace trace("LanguageModel(CB_infer)");
             timer.start();
             m_request.infer();
             timer.end();

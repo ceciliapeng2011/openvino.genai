@@ -13,6 +13,7 @@
 #include "openvino/runtime/intel_gpu/properties.hpp"
 #include "openvino/genai/scheduler_config.hpp"
 #include "continuous_batching/cache/cache_orchestrator.hpp"
+#include "chrome_trace.hpp"
 #include "sequence_group.hpp"
 #include "continuous_batching/sparse_attention.hpp"
 #include "utils.hpp"
@@ -93,37 +94,47 @@ public:
         // map of src -> dst blocks copies per cache type
         std::map<CacheType, std::map<size_t, std::list<size_t>>> typed_block_copy_map;
 
-        // free some blocks taken by non-confirmed candidates in SD / prompt look-up
-        clean_empty_blocks(sequence_groups);
+        {
+            ov::genai::ScopedTrace trace("CB_Sched_CleanEmptyBlocks", "pipeline");
+            clean_empty_blocks(sequence_groups);
+        }
 
         if (!m_cache_orchestrator->has_token_capacity()) {
+            ov::genai::ScopedTrace trace("CB_Sched_InitCache", "pipeline");
             _initialize_cache(sequence_groups);
         }
 
         if (m_config.dynamic_split_fuse) {
-            // deepspeed-mii case
-            // generation phase is always scheduled first
-            _schedule_generate_phase_dynamic_split_fuse(sequence_groups, scheduler_output, typed_block_copy_map);
-            // some tokens from generation prompt are also scheduled
-            _schedule_prompt_phase_dynamic_split_fuse(sequence_groups, scheduler_output);
+            {
+                ov::genai::ScopedTrace trace("CB_Sched_GeneratePhase", "pipeline");
+                _schedule_generate_phase_dynamic_split_fuse(sequence_groups, scheduler_output, typed_block_copy_map);
+            }
+            {
+                ov::genai::ScopedTrace trace("CB_Sched_PromptPhase", "pipeline");
+                _schedule_prompt_phase_dynamic_split_fuse(sequence_groups, scheduler_output);
+            }
         } else {
-            // vLLM case
-            // schedule prompt phase using whole prompt's input_ids
-
-            _schedule_prompt_phase_vllm(sequence_groups, scheduler_output);
-
+            {
+                ov::genai::ScopedTrace trace("CB_Sched_PromptPhase", "pipeline");
+                _schedule_prompt_phase_vllm(sequence_groups, scheduler_output);
+            }
             if (!scheduler_output.is_prompt) {
-                // prompt sequences are not scheduler => scheduler generation phase by dynamic_split_fuse implementation
+                ov::genai::ScopedTrace trace("CB_Sched_GeneratePhase", "pipeline");
                 _schedule_generate_phase_dynamic_split_fuse(sequence_groups, scheduler_output, typed_block_copy_map);
             }
         }
 
-        m_cache_orchestrator->allocate_cache_if_needed();
+        {
+            ov::genai::ScopedTrace trace("CB_Sched_AllocateCache", "pipeline");
+            m_cache_orchestrator->allocate_cache_if_needed();
+        }
         _clear_waiting_sequences(sequence_groups);
         scheduler_output.m_cache_usage = m_cache_orchestrator->get_used_percentage();
         scheduler_output.m_cache_size_in_bytes = m_cache_orchestrator->get_total_cache_size_in_bytes();
-
-        m_cache_orchestrator->copy_blocks(typed_block_copy_map);
+        {
+            ov::genai::ScopedTrace trace("CB_Sched_CopyBlocks", "pipeline");
+            m_cache_orchestrator->copy_blocks(typed_block_copy_map);
+        }
 
         return scheduler_output;
     }

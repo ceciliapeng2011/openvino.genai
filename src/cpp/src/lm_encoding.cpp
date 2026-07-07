@@ -10,6 +10,7 @@
 
 #include "utils.hpp"
 #include "lm_encoding.hpp"
+#include "chrome_trace.hpp"
 #include "openvino/genai/perf_metrics.hpp"
 #include "openvino/genai/streamer_base.hpp"
 
@@ -180,7 +181,10 @@ ov::genai::utils::GenerationFinishInfo get_lm_encoded_results(
     // "Prompt" phase
 
     const auto infer_start = std::chrono::steady_clock::now();
-    m_llm.infer();
+    {
+        ScopedTrace trace("LanguageModel(prefill)");
+        m_llm.infer();
+    }
 
     const auto infer_end = std::chrono::steady_clock::now();
     const auto infer_ms = PerfMetrics::get_microsec(infer_end - infer_start);

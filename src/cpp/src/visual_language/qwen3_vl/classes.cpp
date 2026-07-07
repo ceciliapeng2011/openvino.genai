@@ -4,6 +4,7 @@
 #include "visual_language/qwen3_vl/classes.hpp"
 #include "utils.hpp"
 #include "logger.hpp"
+#include "chrome_trace.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -459,11 +460,17 @@ void InputsEmbedderQwen3VL::add_interpolated_pos_embeds(
     if (m_use_patched_pos_model) {
         // Patched model: pass weights, get [N, D] directly on device
         vision_embeddings_pos.set_tensor("weights", weights);
-        vision_embeddings_pos.infer();
+        {
+            ScopedTrace trace("VisionEmbeddingsPos(patched)");
+            vision_embeddings_pos.infer();
+        }
         weighted_sum = vision_embeddings_pos.get_output_tensor();
     } else {
         // Original model: get [4, N, D], do CPU weighted sum
-        vision_embeddings_pos.infer();
+        {
+            ScopedTrace trace("VisionEmbeddingsPos(original)");
+            vision_embeddings_pos.infer();
+        }
         ov::Tensor pos_embeds = vision_embeddings_pos.get_output_tensor();
 
         size_t num_positions = pos_embeds.get_shape()[1];
@@ -542,8 +549,11 @@ std::pair<ov::Tensor, ov::Tensor> InputsEmbedderQwen3VL::run_video_image_embeddi
     }
     
     vision_embeddings_merger.set_tensor("rotary_pos_emb", rotary_pos_emb);
-    vision_embeddings_merger.infer();
-    
+    {
+        ScopedTrace trace("VisionEmbeddingsMerger(Qwen3VL)");
+        vision_embeddings_merger.infer();
+    }
+
     ov::Tensor vision_embeds = vision_embeddings_merger.get_tensor("last_hidden_state");
     
     if (has_lm_extra_input("deepstack_visual_embeds")) {

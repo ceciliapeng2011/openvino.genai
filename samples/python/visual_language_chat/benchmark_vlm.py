@@ -46,6 +46,23 @@ def weight_0_1(value):
     return fvalue
 
 
+def scheduler_config_from_cm_path(cm_path: bool) -> ov_genai.SchedulerConfig:
+    scheduler_config = ov_genai.SchedulerConfig()
+    scheduler_config.enable_prefix_caching = False
+    scheduler_config.max_num_batched_tokens = sys.maxsize
+
+    if cm_path:
+        # CM PA path w/o sparse
+        sparse_attention_config = ov_genai.SparseAttentionConfig()
+        sparse_attention_config.mode = ov_genai.SparseAttentionMode.XATTENTION
+        sparse_attention_config.xattention_threshold = 100.0
+
+        scheduler_config.use_sparse_attention = True
+        scheduler_config.sparse_attention_config = sparse_attention_config
+
+    return scheduler_config
+
+
 def main():
     parser = argparse.ArgumentParser(description="Help command")
     parser.add_argument("-m", "--model", type=str, help="Path to model and tokenizers base directory")
@@ -67,6 +84,12 @@ def main():
         type=weight_0_1,
         help="(optional): Float value from 0 to 1, control the trade-off between diversity and relevance for visual tokens pruning, "
         "a value of 0 disables relevance weighting, while higher values (up to 1.0) emphasize relevance, making pruning more conservative on borderline tokens.",
+    )
+    parser.add_argument(
+        "--cm_path",
+        action="store_true",
+        default=False,
+        help="(optional): Use CM path scheduler config (default: False).",
     )
 
     args = parser.parse_args()
@@ -94,6 +117,7 @@ def main():
 
     config = ov_genai.GenerationConfig()
     config.max_new_tokens = args.max_new_tokens
+    config.apply_chat_template = False
     if args.pruning_ratio is not None:
         config.pruning_ratio = args.pruning_ratio
     if args.relevance_weight is not None:
@@ -103,12 +127,14 @@ def main():
         pipe = ov_genai.VLMPipeline(models_path, device)
     else:
         # Setting of Scheduler config will trigger usage of ContinuousBatching pipeline, which is not default for Qwen2VL, Qwen2.5VL, Gemma3 due to accuracy issues.
-        scheduler_config = ov_genai.SchedulerConfig()
-        scheduler_config.enable_prefix_caching = False
-        scheduler_config.max_num_batched_tokens = sys.maxsize
+        scheduler_config = scheduler_config_from_cm_path(args.cm_path)
         pipe = ov_genai.VLMPipeline(models_path, device, scheduler_config=scheduler_config)
 
-    input_data = pipe.get_tokenizer().encode(prompt)
+    tokenizer = pipe.get_tokenizer()
+    prompt = tokenizer.apply_chat_template(
+        [{"role": "user", "content": prompt}], add_generation_prompt=True)
+
+    input_data = tokenizer.encode(prompt)
     prompt_token_size = input_data.input_ids.get_shape()[1]
     print(f"Number of images:{len(images)}, Prompt token size: {prompt_token_size}")
 
@@ -134,6 +160,13 @@ def main():
     print(f"TTFT: {perf_metrics.get_ttft().mean:.2f} ± {perf_metrics.get_ttft().std:.2f} ms")
     print(f"TPOT: {perf_metrics.get_tpot().mean:.2f} ± {perf_metrics.get_tpot().std:.2f} ms")
     print(f"Throughput : {perf_metrics.get_throughput().mean:.2f} ± {perf_metrics.get_throughput().std:.2f} tokens/s")
+    print(f"  [TTFT breakdown]")
+    print(f"  Vision encoder: {perf_metrics.get_vision_encoder_duration().mean:.2f} ± {perf_metrics.get_vision_encoder_duration().std:.2f} ms")
+    print(f"  Tokenizer: {perf_metrics.get_tokenizer_duration().mean:.2f} ± {perf_metrics.get_tokenizer_duration().std:.2f} ms")
+    print(f"  Text embeddings: {perf_metrics.get_text_embeddings_duration().mean:.2f} ± {perf_metrics.get_text_embeddings_duration().std:.2f} ms")
+    print(f"  Vision embeddings merger: {perf_metrics.get_vision_embeddings_merger_duration().mean:.2f} ± {perf_metrics.get_vision_embeddings_merger_duration().std:.2f} ms")
+    print(f"  Vision embeddings pos: {perf_metrics.get_vision_embeddings_pos_duration().mean:.2f} ± {perf_metrics.get_vision_embeddings_pos_duration().std:.2f} ms")
+    print(f"  LM prefill: {perf_metrics.get_lm_prefill_duration().mean:.2f} ± {perf_metrics.get_lm_prefill_duration().std:.2f} ms")
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 
 #include "openvino/genai/visual_language/pipeline.hpp"
 
+#include <cstdio>
 #include <optional>
 #include <random>
 
@@ -23,6 +24,7 @@
 #include "visual_language/vision_registry.hpp"
 #include "visual_language/vlm_chat_context.hpp"
 #include "visual_language/vlm_config.hpp"
+#include "chrome_trace.hpp"
 
 using namespace ov::genai;
 
@@ -331,8 +333,20 @@ public:
         m_inputs_embedder->set_vision_token_pruning_config(generation_config.pruning_ratio,
                                                            generation_config.relevance_weight);
 
-        auto encoded_images = m_inputs_embedder->encode_images(images);
-        auto encoded_videos = m_inputs_embedder->encode_videos(videos, videos_metadata);
+        auto& mm = get_model_metrics();
+        mm.reset();
+        mm.collecting = true;
+
+        std::vector<EncodedImage> encoded_images;
+        {
+            ScopedTrace trace("EncodeImages");
+            encoded_images = m_inputs_embedder->encode_images(images);
+        }
+        std::vector<EncodedVideo> encoded_videos;
+        {
+            ScopedTrace trace("EncodeVideos");
+            encoded_videos = m_inputs_embedder->encode_videos(videos, videos_metadata);
+        }
         auto [unified_prompt, image_sequence, video_sequence] = m_inputs_embedder->normalize_prompt(prompt, m_image_id, m_video_id, encoded_images, encoded_videos);
 
         if (m_is_chat_conversation) {
@@ -380,7 +394,8 @@ public:
             generation_config,
             perf_metrics,
             streamer,
-            intermediate_remote_tensor
+            intermediate_remote_tensor,
+            generate_start_time
         );
 
         EncodedResults& encoded_result = finish_info.results;
@@ -463,7 +478,15 @@ public:
         // Evaluate statistics
         decoded.perf_metrics.m_evaluated = false;
         decoded.perf_metrics.evaluate_statistics(generate_start_time);
+        if (!decoded.perf_metrics.raw_metrics.m_token_infer_durations.empty()) {
+            decoded.perf_metrics.vlm_raw_metrics.lm_prefill_durations.emplace_back(
+                decoded.perf_metrics.raw_metrics.m_token_infer_durations[0]);
+        }
 
+        // Emit aggregate pipeline metrics to chrome trace
+        emit_pipeline_trace_events(decoded.perf_metrics, generate_start_time, generate_end_time);
+
+        ChromeTrace::get_instance().flush();
         return decoded;
     }
 
@@ -510,6 +533,10 @@ public:
 
         m_inputs_embedder->set_vision_token_pruning_config(generation_config.pruning_ratio,
                                                            generation_config.relevance_weight);
+
+        auto& mm = get_model_metrics();
+        mm.reset();
+        mm.collecting = true;
 
         VLMChatContext chat_context(history, m_vision_registry, *m_inputs_embedder);
 
@@ -558,7 +585,8 @@ public:
             generation_config,
             perf_metrics,
             streamer,
-            intermediate_remote_tensor
+            intermediate_remote_tensor,
+            generate_start_time
         );
 
         EncodedResults& encoded_result = generation_finish_info.results;
@@ -598,16 +626,32 @@ public:
         res_raw_counters.chat_template_durations.insert(res_raw_counters.chat_template_durations.end(), raw_counters.chat_template_durations.begin(), raw_counters.chat_template_durations.end());
 
         // VLM specific perf metrics
-        decoded.perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.insert(
-            decoded.perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.end(),
-            perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.begin(),
-            perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.end()
-        );
+        auto& dst_vlm = decoded.perf_metrics.vlm_raw_metrics;
+        auto& src_vlm = perf_metrics.vlm_raw_metrics;
+        dst_vlm.prepare_embeddings_durations.insert(dst_vlm.prepare_embeddings_durations.end(),
+            src_vlm.prepare_embeddings_durations.begin(), src_vlm.prepare_embeddings_durations.end());
+        dst_vlm.vision_encoder_durations.insert(dst_vlm.vision_encoder_durations.end(),
+            src_vlm.vision_encoder_durations.begin(), src_vlm.vision_encoder_durations.end());
+        dst_vlm.tokenizer_durations.insert(dst_vlm.tokenizer_durations.end(),
+            src_vlm.tokenizer_durations.begin(), src_vlm.tokenizer_durations.end());
+        dst_vlm.vision_embeddings_merger_durations.insert(dst_vlm.vision_embeddings_merger_durations.end(),
+            src_vlm.vision_embeddings_merger_durations.begin(), src_vlm.vision_embeddings_merger_durations.end());
+        dst_vlm.text_embeddings_durations.insert(dst_vlm.text_embeddings_durations.end(),
+            src_vlm.text_embeddings_durations.begin(), src_vlm.text_embeddings_durations.end());
+        dst_vlm.vision_embeddings_pos_durations.insert(dst_vlm.vision_embeddings_pos_durations.end(),
+            src_vlm.vision_embeddings_pos_durations.begin(), src_vlm.vision_embeddings_pos_durations.end());
 
         // Evaluate statistics
         decoded.perf_metrics.m_evaluated = false;
         decoded.perf_metrics.evaluate_statistics(generate_start_time);
+        if (!decoded.perf_metrics.raw_metrics.m_token_infer_durations.empty()) {
+            decoded.perf_metrics.vlm_raw_metrics.lm_prefill_durations.emplace_back(
+                decoded.perf_metrics.raw_metrics.m_token_infer_durations[0]);
+        }
 
+        emit_pipeline_trace_events(decoded.perf_metrics, generate_start_time, generate_end_time);
+
+        ChromeTrace::get_instance().flush();
         return decoded;
     }
 
@@ -666,6 +710,36 @@ public:
     }
 
 private:
+    void emit_pipeline_trace_events(const VLMPerfMetrics& metrics,
+                                    std::chrono::steady_clock::time_point generate_start_time,
+                                    std::chrono::steady_clock::time_point generate_end_time) {
+        auto& trace = ChromeTrace::get_instance();
+        if (!trace.is_enabled()) return;
+
+        auto gen_dur_ms = std::chrono::duration_cast<std::chrono::microseconds>(generate_end_time - generate_start_time).count() / 1000.0;
+        GENAI_INFO("[TRACE] [%s] Generate: %.3f ms", trace_timestamp().c_str(), gen_dur_ms);
+        trace.add_event_from_timepoints("Generate", "pipeline", generate_start_time, generate_end_time, 1);
+
+        if (!metrics.raw_metrics.m_times_to_first_token.empty()) {
+            auto ttft_dur_us = static_cast<int64_t>(metrics.raw_metrics.m_times_to_first_token[0].count());
+            GENAI_INFO("[TRACE] [%s] TTFT: %.3f ms", trace_timestamp().c_str(), ttft_dur_us / 1000.0);
+            trace.add_metric_event("TTFT", "pipeline", generate_start_time, ttft_dur_us, 1);
+        }
+
+        if (!metrics.vlm_raw_metrics.prepare_embeddings_durations.empty()) {
+            auto embed_dur_us = static_cast<int64_t>(metrics.vlm_raw_metrics.prepare_embeddings_durations[0].count());
+            GENAI_INFO("[TRACE] [%s] EmbeddingsPreparationTime: %.3f ms", trace_timestamp().c_str(), embed_dur_us / 1000.0);
+        }
+
+        if (metrics.tpot.mean > 0 && !metrics.raw_metrics.m_new_token_times.empty()) {
+            auto first_tok_time = metrics.raw_metrics.m_new_token_times[0];
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "TPOT_phase(avg=%.2fms)", metrics.tpot.mean);
+            GENAI_INFO("[TRACE] [%s] %s", trace_timestamp().c_str(), buf);
+            trace.add_event_from_timepoints(std::string(buf), "pipeline", first_tok_time, generate_end_time, 1);
+        }
+    }
+
     void reset_language_state() {
         if (m_adapter_controller) {
             // Preserve adapter-owned state variables
@@ -713,16 +787,30 @@ private:
         GenerationConfig& generation_config,
         VLMPerfMetrics& perf_metrics,
         const StreamerVariant& streamer,
-        const bool use_intermediate_remote_tensor
+        const bool use_intermediate_remote_tensor,
+        std::chrono::steady_clock::time_point generate_start_time
     ) {
         ov::Tensor inputs_embeds;
         std::optional<ov::Tensor> token_type_ids;
         bool recalculate_merged_embeddings = encoded_images.size() > 0 || encoded_videos.size() > 0;
 
         auto start_get_inputs_embeds = std::chrono::steady_clock::now();
-        if (m_inputs_embedder->has_token_type_ids()) {
-            std::tie(inputs_embeds, token_type_ids) =
-                m_inputs_embedder->get_inputs_embeds_with_token_type_ids(
+        {
+            ScopedTrace embeddings_trace("EmbeddingsPreparation", "pipeline");
+            if (m_inputs_embedder->has_token_type_ids()) {
+                std::tie(inputs_embeds, token_type_ids) =
+                    m_inputs_embedder->get_inputs_embeds_with_token_type_ids(
+                        unified_prompt,
+                        encoded_images,
+                        encoded_videos,
+                        perf_metrics,
+                        recalculate_merged_embeddings,
+                        image_sequence,
+                        video_sequence,
+                        history_vision_count
+                    );
+            } else {
+                inputs_embeds = m_inputs_embedder->get_inputs_embeds(
                     unified_prompt,
                     encoded_images,
                     encoded_videos,
@@ -732,20 +820,20 @@ private:
                     video_sequence,
                     history_vision_count
                 );
-        } else {
-            inputs_embeds = m_inputs_embedder->get_inputs_embeds(
-                unified_prompt,
-                encoded_images, 
-                encoded_videos,
-                perf_metrics,
-                recalculate_merged_embeddings,
-                image_sequence,
-                video_sequence,
-                history_vision_count
-            );
+            }
         }
         auto end_get_inputs_embeds = std::chrono::steady_clock::now();
-        perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
+        {
+            ScopedTrace trace("PerfMetricsCollection", "pipeline");
+            auto& mm = get_model_metrics();
+            mm.collecting = false;
+            perf_metrics.vlm_raw_metrics.prepare_embeddings_durations.emplace_back(PerfMetrics::get_microsec(end_get_inputs_embeds - start_get_inputs_embeds));
+            perf_metrics.vlm_raw_metrics.vision_encoder_durations.emplace_back(mm.vision_encoder_us);
+            perf_metrics.vlm_raw_metrics.tokenizer_durations.emplace_back(mm.tokenizer_us);
+            perf_metrics.vlm_raw_metrics.text_embeddings_durations.emplace_back(mm.text_embeddings_us);
+            perf_metrics.vlm_raw_metrics.vision_embeddings_merger_durations.emplace_back(mm.vision_embeddings_merger_us);
+            perf_metrics.vlm_raw_metrics.vision_embeddings_pos_durations.emplace_back(mm.vision_embeddings_pos_us);
+        }
 
         if (m_is_npu) {
             // Prefill model in NPU is reshaped to NPUW_LLM_MAX_PROMPT_LEN x NPUW_LLM_MAX_PROMPT_LEN
@@ -757,22 +845,25 @@ private:
 
         utils::CacheState& cache_state = m_inputs_embedder->get_cache_state();
 
-        if (m_is_chat_conversation) {
-            if (m_use_full_chat_history) {
-                cache_state.reset_state();
-                m_language.reset_state();
-                m_language.get_tensor("attention_mask").set_shape({1, 0});
-            } else {
-                bool needs_full_reset = cache_state.needs_reset();
-                utils::trim_kv_cache(m_language, cache_state, m_adapter_controller);
-                if (needs_full_reset) {
+        {
+            ScopedTrace trace("KVCacheManagement", "pipeline");
+            if (m_is_chat_conversation) {
+                if (m_use_full_chat_history) {
+                    cache_state.reset_state();
+                    m_language.reset_state();
                     m_language.get_tensor("attention_mask").set_shape({1, 0});
+                } else {
+                    bool needs_full_reset = cache_state.needs_reset();
+                    utils::trim_kv_cache(m_language, cache_state, m_adapter_controller);
+                    if (needs_full_reset) {
+                        m_language.get_tensor("attention_mask").set_shape({1, 0});
+                    }
                 }
             }
-        }
 
-        if (m_adapter_controller) {
-            m_adapter_controller->apply(m_language, generation_config.adapters);
+            if (m_adapter_controller) {
+                m_adapter_controller->apply(m_language, generation_config.adapters);
+            }
         }
 
         std::vector<SequenceGroup::Ptr> requests;
@@ -781,17 +872,21 @@ private:
         const size_t history_size = m_language.get_tensor("attention_mask").get_shape().at(1) - cache_state.num_tokens_to_trim;
         const size_t inputs_embeds_size = inputs_embeds.get_shape().at(1);
 
-        std::vector<int64_t> tokenized_history = cache_state.get_state();
-        ov::Tensor prompt_ids(ov::element::i64, { history_size + inputs_embeds_size });
-        OPENVINO_ASSERT(prompt_ids.get_size() >= tokenized_history.size(), "Prompt ids size is less than tokenized history size");
-        std::fill_n(prompt_ids.data<int64_t>(), prompt_ids.get_size(), m_tokenizer.get_pad_token_id());
-        std::copy(tokenized_history.begin(), tokenized_history.end(), prompt_ids.data<int64_t>());
+        ov::Tensor prompt_ids;
+        {
+            ScopedTrace trace("PromptIdsSetup", "pipeline");
+            std::vector<int64_t> tokenized_history = cache_state.get_state();
+            prompt_ids = ov::Tensor(ov::element::i64, { history_size + inputs_embeds_size });
+            OPENVINO_ASSERT(prompt_ids.get_size() >= tokenized_history.size(), "Prompt ids size is less than tokenized history size");
+            std::fill_n(prompt_ids.data<int64_t>(), prompt_ids.get_size(), m_tokenizer.get_pad_token_id());
+            std::copy(tokenized_history.begin(), tokenized_history.end(), prompt_ids.data<int64_t>());
 
-        // Update perf metrics with num_input_tokens
-        perf_metrics.num_input_tokens = prompt_ids.get_size();
+            // Update perf metrics with num_input_tokens
+            perf_metrics.num_input_tokens = prompt_ids.get_size();
 
-        SequenceGroup::Ptr sequence_group = std::make_shared<SequenceGroup>(request_id, prompt_ids, generation_config);
-        requests.push_back(std::move(sequence_group));
+            SequenceGroup::Ptr sequence_group = std::make_shared<SequenceGroup>(request_id, prompt_ids, generation_config);
+            requests.push_back(std::move(sequence_group));
+        }
 
         std::shared_ptr<StreamerBase> streamer_ptr = utils::create_streamer(streamer, m_tokenizer);
 
@@ -799,12 +894,16 @@ private:
             (generation_config.is_greedy_decoding() || generation_config.is_multinomial()),
             "Currently streaming is possible only with batch size=1 and only for greedy or multinomial decoding");
 
-        ov::Tensor new_atten_mask = ov::Tensor{ov::element::i64, { 1, history_size + inputs_embeds_size }};
-        std::fill_n(new_atten_mask.data<int64_t>(), new_atten_mask.get_size(), 1);
-
+        ov::Tensor new_atten_mask;
         ov::Tensor position_ids;
         std::optional<int64_t> rope_delta;
-        std::tie(position_ids, rope_delta) = m_inputs_embedder->get_position_ids(inputs_embeds_size, history_size);
+        {
+            ScopedTrace trace("AttentionAndPositionSetup", "pipeline");
+            new_atten_mask = ov::Tensor{ov::element::i64, { 1, history_size + inputs_embeds_size }};
+            std::fill_n(new_atten_mask.data<int64_t>(), new_atten_mask.get_size(), 1);
+
+            std::tie(position_ids, rope_delta) = m_inputs_embedder->get_position_ids(inputs_embeds_size, history_size);
+        }
 
         const auto& lm_extra_inputs = m_inputs_embedder->get_lm_extra_inputs();
 

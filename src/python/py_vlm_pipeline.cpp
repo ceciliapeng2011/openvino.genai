@@ -198,11 +198,35 @@ void init_vlm_pipeline(py::module_& m) {
         .def(py::init<>())
         .def_property_readonly("prepare_embeddings_durations", [](const ov::genai::VLMRawPerfMetrics& rw) {
             return common_utils::get_ms(rw, &ov::genai::VLMRawPerfMetrics::prepare_embeddings_durations);
+        })
+        .def_property_readonly("vision_encoder_durations", [](const ov::genai::VLMRawPerfMetrics& rw) {
+            return common_utils::get_ms(rw, &ov::genai::VLMRawPerfMetrics::vision_encoder_durations);
+        })
+        .def_property_readonly("tokenizer_durations", [](const ov::genai::VLMRawPerfMetrics& rw) {
+            return common_utils::get_ms(rw, &ov::genai::VLMRawPerfMetrics::tokenizer_durations);
+        })
+        .def_property_readonly("text_embeddings_durations", [](const ov::genai::VLMRawPerfMetrics& rw) {
+            return common_utils::get_ms(rw, &ov::genai::VLMRawPerfMetrics::text_embeddings_durations);
+        })
+        .def_property_readonly("vision_embeddings_merger_durations", [](const ov::genai::VLMRawPerfMetrics& rw) {
+            return common_utils::get_ms(rw, &ov::genai::VLMRawPerfMetrics::vision_embeddings_merger_durations);
+        })
+        .def_property_readonly("vision_embeddings_pos_durations", [](const ov::genai::VLMRawPerfMetrics& rw) {
+            return common_utils::get_ms(rw, &ov::genai::VLMRawPerfMetrics::vision_embeddings_pos_durations);
+        })
+        .def_property_readonly("lm_prefill_durations", [](const ov::genai::VLMRawPerfMetrics& rw) {
+            return common_utils::get_ms(rw, &ov::genai::VLMRawPerfMetrics::lm_prefill_durations);
         });
 
     py::class_<ov::genai::VLMPerfMetrics, ov::genai::PerfMetrics>(m, "VLMPerfMetrics", perf_metrics_docstring)
         .def(py::init<>())
         .def("get_prepare_embeddings_duration", &ov::genai::VLMPerfMetrics::get_prepare_embeddings_duration)
+        .def("get_vision_encoder_duration", &ov::genai::VLMPerfMetrics::get_vision_encoder_duration)
+        .def("get_tokenizer_duration", &ov::genai::VLMPerfMetrics::get_tokenizer_duration)
+        .def("get_text_embeddings_duration", &ov::genai::VLMPerfMetrics::get_text_embeddings_duration)
+        .def("get_vision_embeddings_merger_duration", &ov::genai::VLMPerfMetrics::get_vision_embeddings_merger_duration)
+        .def("get_vision_embeddings_pos_duration", &ov::genai::VLMPerfMetrics::get_vision_embeddings_pos_duration)
+        .def("get_lm_prefill_duration", &ov::genai::VLMPerfMetrics::get_lm_prefill_duration)
         .def_readonly("vlm_raw_metrics", &ov::genai::VLMPerfMetrics::vlm_raw_metrics);
 
     py::class_<ov::genai::VLMDecodedResults, ov::genai::DecodedResults>(m, "VLMDecodedResults", decoded_results_docstring)

@@ -25,6 +25,7 @@
 #include "visual_language/videochat_flash/classes.hpp"
 
 #include "continuous_batching/timer.hpp"
+#include "chrome_trace.hpp"
 #include "utils.hpp"
 
 namespace {
@@ -126,7 +127,11 @@ ov::Tensor InputsEmbedder::IInputsEmbedder::apply_chat_template_tokenize(const s
 
     if (m_is_chat_conversation) {
         std::string prompt_to_encode = prompt;
-        ov::Tensor new_chat_tokens = m_tokenizer.encode(prompt_to_encode, ov::genai::add_special_tokens(add_special_tokens)).input_ids;
+        ov::Tensor new_chat_tokens;
+        {
+            ScopedTrace trace("Tokenizer(encode)");
+            new_chat_tokens = m_tokenizer.encode(prompt_to_encode, ov::genai::add_special_tokens(add_special_tokens)).input_ids;
+        }
         encode_timer.end();
         metrics.raw_metrics.tokenization_durations.emplace_back(encode_timer.get_duration_microsec());
         return new_chat_tokens;
@@ -142,8 +147,12 @@ ov::Tensor InputsEmbedder::IInputsEmbedder::apply_chat_template_tokenize(const s
             templated_prompt = m_tokenizer.apply_chat_template(history, add_generation_prompt);
             template_end_time = std::chrono::steady_clock::now();
             apply_template = true;
-            encoded_input_ids = m_tokenizer.encode(templated_prompt, ov::genai::add_special_tokens(add_special_tokens)).input_ids;
+            {
+                ScopedTrace trace("Tokenizer(encode)");
+                encoded_input_ids = m_tokenizer.encode(templated_prompt, ov::genai::add_special_tokens(add_special_tokens)).input_ids;
+            }
         } else {
+            ScopedTrace trace("Tokenizer(encode)");
             encoded_input_ids = m_tokenizer.encode(prompt, ov::genai::add_special_tokens(add_special_tokens)).input_ids;
         }
         encode_timer.end();

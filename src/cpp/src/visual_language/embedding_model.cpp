@@ -10,6 +10,7 @@
 #include "openvino/op/constant.hpp"
 
 #include "utils.hpp"
+#include "chrome_trace.hpp"
 
 #include "embedding_model.hpp"
 
@@ -80,7 +81,10 @@ ov::Tensor EmbeddingsModel::infer(EmbeddingsRequest& req, const ov::Tensor& inpu
     } else {
         req.ireq.set_output_tensor(req.cpu_tensor);
     }
-    req.ireq.infer();
+    {
+        ScopedTrace trace("TextEmbeddings");
+        req.ireq.infer();
+    }
     return req.ireq.get_output_tensor();
 }
 

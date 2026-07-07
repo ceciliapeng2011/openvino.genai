@@ -22,6 +22,7 @@
 #include "openvino/op/concat.hpp"
 
 #include "visual_language/vl_sdpa_transformations.hpp"
+#include "chrome_trace.hpp"
 
 namespace ov::genai {
 
@@ -753,7 +754,10 @@ void VisionEncoderQwen2VL::encode_with_imagepreprocess_cpp(const std::vector<ov:
     std::memcpy(flattened_patches.data(), transposed_patches.data(), transposed_patches.get_byte_size());
 
     encoder.set_tensor("hidden_states", flattened_patches);
-    encoder.infer();
+    {
+        ScopedTrace trace("VisionEncoder(cpp_preprocess)");
+        encoder.infer();
+    }
 
     const ov::Tensor& infer_output = encoder.get_output_tensor();
     // Just avoid to multiple copy.
@@ -861,7 +865,10 @@ void VisionEncoderQwen2VL::encode_with_imagepreprocess_ov(const std::vector<ov::
     encoder.set_tensor("reshape_shape4d", reshape_shape4d);
     encoder.set_tensor("reshape_shape2d", reshape_shape2d);
 
-    encoder.infer();
+    {
+        ScopedTrace trace("VisionEncoder(ov_preprocess)");
+        encoder.infer();
+    }
 
     const ov::Tensor& infer_output = encoder.get_output_tensor();
 
@@ -1355,7 +1362,10 @@ std::pair<ov::Tensor, ov::Tensor> InputsEmbedderQwen2VL::run_video_image_embeddi
         vision_embeddings_merger.set_tensor("attention_mask", attention_mask);
     }
     vision_embeddings_merger.set_tensor("rotary_pos_emb", rotary_pos_emb);
-    vision_embeddings_merger.infer();
+    {
+        ScopedTrace trace("VisionEmbeddingsMerger");
+        vision_embeddings_merger.infer();
+    }
     ov::Tensor processed_vision_embeds = vision_embeddings_merger.get_output_tensor();
 
     auto out_vision_shape = processed_vision_embeds.get_shape();

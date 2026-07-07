@@ -1,6 +1,7 @@
 // Copyright (C) 2023-2026 Intel Corporation
 // SPDX-License-Identifier: Apache-2.0
 
+#include <cstdint>
 #include <cxxopts.hpp>
 #include <filesystem>
 
@@ -22,6 +23,7 @@ int main(int argc, char* argv[]) try {
     ("d,device", "device", cxxopts::value<std::string>()->default_value("CPU"))
     ("pr,pruning_ratio", "(optional): Percentage of visual tokens to prune (valid range: 0-100); if this option is not provided, pruning is disabled.", cxxopts::value<size_t>())
     ("rw,relevance_weight", "(optional): Float value from 0 to 1, controls the trade-off between diversity and relevance for visual tokens pruning; a value of 0 disables relevance weighting, while higher values (up to 1.0) emphasize relevance, making pruning more conservative on borderline tokens.", cxxopts::value<float>())
+    ("cm_path", "(optional): Use CM path scheduler config (default: false).", cxxopts::value<bool>()->default_value("false"))
     ("h,help", "Print usage");
 
     cxxopts::ParseResult result;
@@ -81,6 +83,18 @@ int main(int argc, char* argv[]) try {
         ov::genai::SchedulerConfig scheduler_config;
         scheduler_config.enable_prefix_caching = false;
         scheduler_config.max_num_batched_tokens = std::numeric_limits<std::size_t>::max();
+
+        bool use_cm_path = result["cm_path"].as<bool>();
+        if (use_cm_path) {
+            // CM PA path w/o sparse
+            ov::genai::SparseAttentionConfig sparse_attention_config;
+            sparse_attention_config.mode = ov::genai::SparseAttentionMode::XATTENTION;
+            sparse_attention_config.xattention_threshold = 100.0f;
+
+            scheduler_config.use_sparse_attention = true;
+            scheduler_config.sparse_attention_config = sparse_attention_config;
+        }
+
         pipe = std::make_unique<ov::genai::VLMPipeline>(models_path, device, ov::genai::scheduler_config(scheduler_config));
     }
 

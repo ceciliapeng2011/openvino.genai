@@ -3,8 +3,11 @@
 
 #pragma once
 
+#include <cstdio>
+
 #include "visual_language/pipeline_base.hpp"
 #include "visual_language/chat_history_state.hpp"
+#include "chrome_trace.hpp"
 #include "openvino/genai/continuous_batching_pipeline.hpp"
 
 using namespace ov::genai;
@@ -192,9 +195,48 @@ private:
         );
         final_decoded_results.perf_metrics.m_evaluated = false;
         final_decoded_results.perf_metrics.evaluate_statistics(start_time);
+        if (!final_decoded_results.perf_metrics.raw_metrics.m_inference_durations.empty()) {
+            final_decoded_results.perf_metrics.vlm_raw_metrics.lm_prefill_durations.emplace_back(
+                final_decoded_results.perf_metrics.raw_metrics.m_inference_durations[0]);
+        }
         final_decoded_results.texts = decoded_results.texts;
         final_decoded_results.scores = decoded_results.scores;
         final_decoded_results.finish_reasons = decoded_results.finish_reasons;
+
+        auto& trace = ChromeTrace::get_instance();
+        if (trace.is_enabled()) {
+            auto& metrics = final_decoded_results.perf_metrics;
+            auto ts = trace_timestamp();
+            auto gen_dur_ms = std::chrono::duration_cast<std::chrono::microseconds>(stop_time - start_time).count() / 1000.0;
+            GENAI_INFO("[TRACE] [%s] Generate: %.3f ms", ts.c_str(), gen_dur_ms);
+            trace.add_event_from_timepoints("Generate", "pipeline", start_time, stop_time, 1);
+
+            GENAI_DEBUG("[TRACE] metrics check: m_new_token_times=%zu, m_times_to_first_token=%zu, m_token_infer_durations=%zu, prepare_embeddings=%zu, tpot.mean=%.3f",
+                metrics.raw_metrics.m_new_token_times.size(),
+                metrics.raw_metrics.m_times_to_first_token.size(),
+                metrics.raw_metrics.m_token_infer_durations.size(),
+                metrics.vlm_raw_metrics.prepare_embeddings_durations.size(),
+                metrics.tpot.mean);
+
+            if (!metrics.raw_metrics.m_times_to_first_token.empty()) {
+                auto ttft_dur_us = static_cast<int64_t>(metrics.raw_metrics.m_times_to_first_token[0].count());
+                GENAI_INFO("[TRACE] [%s] TTFT: %.3f ms", trace_timestamp().c_str(), ttft_dur_us / 1000.0);
+                trace.add_metric_event("TTFT", "pipeline", start_time, ttft_dur_us, 1);
+            }
+            if (!metrics.vlm_raw_metrics.prepare_embeddings_durations.empty()) {
+                auto embed_dur_us = static_cast<int64_t>(metrics.vlm_raw_metrics.prepare_embeddings_durations[0].count());
+                GENAI_INFO("[TRACE] [%s] EmbeddingsPreparationTime: %.3f ms", trace_timestamp().c_str(), embed_dur_us / 1000.0);
+            }
+            if (metrics.tpot.mean > 0 && !metrics.raw_metrics.m_new_token_times.empty()) {
+                auto first_tok_time = metrics.raw_metrics.m_new_token_times[0];
+                char buf[64];
+                std::snprintf(buf, sizeof(buf), "TPOT_phase(avg=%.2fms)", metrics.tpot.mean);
+                GENAI_INFO("[TRACE] [%s] %s", trace_timestamp().c_str(), buf);
+                trace.add_event_from_timepoints(std::string(buf), "pipeline", first_tok_time, stop_time, 1);
+            }
+            trace.flush();
+        }
+
         return final_decoded_results;
     }
 };
